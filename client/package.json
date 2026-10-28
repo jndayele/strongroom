@@ -1,0 +1,27 @@
+{
+  "name": "strongroom-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.26.0",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "@vitejs/plugin-react": "4.4.1",
+    "eslint": "9.26.0",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.32.0",
+    "vite": "6.3.4"
+  }
+}

@@ -1,0 +1,25 @@
+title = "Strongroom Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "strongroom-secret-key-format"
+description = "Detects Strongroom 128-bit user Secret Key format (A3-XXXXXX-XXXXXX-XXXXX)"
+regex = '''\bA3-[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{5}\b'''
+tags = ["key", "strongroom", "secret-key"]
+
+[[rules]]
+id = "strongroom-env-secret-assignment"
+description = "Detects non-placeholder secret values in environment configurations"
+regex = '''(?i)(OPAQUE_SERVER_SETUP_SECRET|COOKIE_SIGNING_KEY|TOKEN_SIGNING_KEY|TOTP_ENCRYPTION_KEY|EMAIL_ENCRYPTION_KEY)\s*=\s*["']?(?!CHANGE_ME|REPLACE_WITH_|__PLACEHOLDER__|example|placeholder)[A-Za-z0-9+/=_\-]{16,}["']?'''
+tags = ["env", "strongroom", "secret"]
+
+[allowlist]
+description = "Allow documented format examples in PRD and security design docs"
+paths = [
+  '''^docs/PRD\.md$''',
+  '''^security/crypto-design\.md$''',
+  '''^security/configs/gitleaks\.toml$''',
+  '''^\.env\.example$''',
+]

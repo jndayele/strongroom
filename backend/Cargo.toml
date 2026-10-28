@@ -1,0 +1,24 @@
+[package]
+name = "strongroom-backend"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+description = "Strongroom zero-knowledge password vault API (Phase 0 skeleton)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+axum = { version = "=0.8.4", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "=1.45.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "io-util", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
