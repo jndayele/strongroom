@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Stage 1: Build the static/minimal Rust binary
-FROM rust:1.86.0-bookworm AS builder
+# Stage 1: Build the static/minimal Rust binary (pinned by SHA-256 digest)
+FROM rust:1.86.0-bookworm@sha256:300ec56abce8cc9448ddea2172747d048ed902a3090e6b57babb2bf19f754081 AS builder
 
 WORKDIR /app
 
@@ -24,8 +24,8 @@ RUN touch src/main.rs src/lib.rs && \
     cargo build --release --locked --bin strongroom-backend && \
     strip /app/target/release/strongroom-backend
 
-# Stage 2: Minimal distroless runtime image (non-root, read-only root filesystem compatible)
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Stage 2: Minimal distroless runtime image (non-root, read-only root filesystem compatible, pinned by SHA-256 digest)
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:ce0d66bc0f64aae46e6a03add867b07f42cc7b8799c949c2e898057b7f75a151
 
 WORKDIR /
 

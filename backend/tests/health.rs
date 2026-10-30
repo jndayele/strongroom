@@ -2,8 +2,12 @@
 
 use std::{collections::HashMap, error::Error, net::SocketAddr};
 use strongroom_backend::{
-    build_app,
-    middleware::{MAX_REQUEST_BODY_BYTES, SECURITY_HEADERS},
+    build_app, finalize_router_with_limits,
+    middleware::{
+        RouteBodyLimits, DEFAULT_MAX_REQUEST_BODY_BYTES, MAX_REQUEST_BODY_BYTES, SECURITY_HEADERS,
+    },
+    route_with_body_limit,
+    routes::health,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -16,14 +20,17 @@ struct RawHttpResponse {
     body: String,
 }
 
-async fn spawn_test_server() -> Result<SocketAddr, Box<dyn Error>> {
+async fn spawn_router(app: axum::Router) -> Result<SocketAddr, Box<dyn Error>> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    let app = build_app();
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
     Ok(addr)
+}
+
+async fn spawn_test_server() -> Result<SocketAddr, Box<dyn Error>> {
+    spawn_router(build_app()).await
 }
 
 async fn send_raw_http_request(
@@ -129,6 +136,7 @@ async fn wrong_method_returns_405_with_all_security_headers() -> Result<(), Box<
 async fn oversized_request_body_is_rejected_with_413_and_security_headers(
 ) -> Result<(), Box<dyn Error>> {
     let addr = spawn_test_server().await?;
+    assert_eq!(DEFAULT_MAX_REQUEST_BODY_BYTES, 16 * 1024);
     let oversized_len = MAX_REQUEST_BODY_BYTES + 1024;
     let body = vec![b'a'; oversized_len];
     let mut request = format!(
@@ -171,5 +179,83 @@ async fn oversized_chunked_stream_is_rejected_with_413_and_security_headers(
     );
     assert_eq!(response.body, r#"{"error":"request_too_large"}"#);
     assert_all_security_headers_present(&response.headers)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn per_route_body_limit_override_allows_larger_body_only_on_configured_route(
+) -> Result<(), Box<dyn Error>> {
+    let raised_limit = 32 * 1024; // 32 KiB for a specific route
+    let mut limits = RouteBodyLimits::new();
+    assert_eq!(limits.default_limit(), 16 * 1024);
+
+    let router = axum::Router::new().route("/health", axum::routing::get(health));
+    let router = route_with_body_limit(
+        router,
+        "/large-upload-test",
+        axum::routing::post(|body: axum::body::Bytes| async move {
+            format!("{{\"received\":{}}}", body.len())
+        }),
+        raised_limit,
+        &mut limits,
+    );
+    let app = finalize_router_with_limits(router, limits);
+    let addr = spawn_router(app).await?;
+
+    // 1. A 24 KiB body (> 16 KiB default, <= 32 KiB override) succeeds on /large-upload-test
+    let body_24k = vec![b'b'; 24 * 1024];
+    let mut req_allowed = format!(
+        "POST /large-upload-test HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_24k.len()
+    )
+    .into_bytes();
+    req_allowed.extend_from_slice(&body_24k);
+
+    let res_allowed = send_raw_http_request(addr, &req_allowed).await?;
+    assert!(
+        res_allowed.status_line.starts_with("HTTP/1.1 200 OK"),
+        "Expected 200 OK on route with raised limit, got: {}",
+        res_allowed.status_line
+    );
+    assert_eq!(res_allowed.body, r#"{"received":24576}"#);
+    assert_all_security_headers_present(&res_allowed.headers)?;
+
+    // 2. The exact same 24 KiB body is still rejected with 413 on /health (which uses the 16 KiB default)
+    let mut req_default_rejected = format!(
+        "GET /health HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_24k.len()
+    )
+    .into_bytes();
+    req_default_rejected.extend_from_slice(&body_24k);
+
+    let res_default_rejected = send_raw_http_request(addr, &req_default_rejected).await?;
+    assert!(
+        res_default_rejected
+            .status_line
+            .starts_with("HTTP/1.1 413 Payload Too Large"),
+        "Expected 413 on default route for 24 KiB body, got: {}",
+        res_default_rejected.status_line
+    );
+    assert_all_security_headers_present(&res_default_rejected.headers)?;
+
+    // 3. A 33 KiB body (> 32 KiB override) is rejected with 413 on /large-upload-test
+    let body_33k = vec![b'c'; 33 * 1024];
+    let mut req_over_raised = format!(
+        "POST /large-upload-test HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body_33k.len()
+    )
+    .into_bytes();
+    req_over_raised.extend_from_slice(&body_33k);
+
+    let res_over_raised = send_raw_http_request(addr, &req_over_raised).await?;
+    assert!(
+        res_over_raised
+            .status_line
+            .starts_with("HTTP/1.1 413 Payload Too Large"),
+        "Expected 413 when exceeding custom 32 KiB limit, got: {}",
+        res_over_raised.status_line
+    );
+    assert_all_security_headers_present(&res_over_raised.headers)?;
+
     Ok(())
 }

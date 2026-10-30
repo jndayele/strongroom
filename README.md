@@ -27,11 +27,14 @@ Zero-knowledge web password vault (`Phase 0: Project Skeleton`).
 │   │   ├── lib.rs                  # Router construction & #![forbid(unsafe_code)]
 │   │   └── main.rs                 # Binary entrypoint
 │   ├── tests/
-│   │   └── health.rs               # Integration & security header tests
+│   │   ├── headers_sync.rs         # CI/local test verifying render.yaml & backend headers match security-headers.json
+│   │   └── health.rs               # Integration, per-route body limit & security header tests
 │   ├── Cargo.toml                  # Exact-pinned Rust dependencies & strict clippy lints
-│   └── Dockerfile                  # Multi-stage build -> gcr.io/distroless/cc-debian12:nonroot
+│   └── Dockerfile                  # Multi-stage build -> gcr.io/distroless/cc-debian12:nonroot (pinned by digest)
 ├── client/                         # React + TypeScript (strict, no `any`) + Vite frontend
 │   ├── public/                     # Self-hosted static assets only
+│   │   └── .well-known/
+│   │       └── security.txt        # RFC 9116 security disclosure file pointing at SECURITY.md
 │   ├── src/
 │   │   ├── auth/                   # Client auth boundary placeholder
 │   │   ├── components/             # React components (LandingPage)

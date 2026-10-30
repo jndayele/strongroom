@@ -1,0 +1,9 @@
+# Strongroom Security Policy & Responsible Disclosure (RFC 9116)
+# Placeholder values below must be updated with your production domain/repo before launch.
+# See /SECURITY.md in the repository root for full disclosure guidelines.
+
+Contact: mailto:security@strongroom.example
+Expires: 2027-10-30T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://app.strongroom.example/.well-known/security.txt
+Policy: https://github.com/REPLACE-WITH-ORG/strongroom/blob/main/SECURITY.md
