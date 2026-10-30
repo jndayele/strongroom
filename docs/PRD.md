@@ -52,7 +52,7 @@ The only crypto-adjacent npm dependency is the OPAQUE client. Everything else us
 | Server compromiser | Root on API, reads all secrets and memory | Cannot decrypt vaults; **can** serve malicious JS (see section 9) |
 | Network attacker | MITM on a user's connection | Blocked by TLS 1.3, HSTS preload, and OPAQUE |
 | Credential stuffer | Bulk login attempts | Rate limits, backoff, mandatory second factor |
-| XSS attacker | Runs script in the page | Strict CSP and Trusted Types make injection very hard; non-extractable keys mean raw keys cannot be exported |
+| XSS attacker | Runs script in the page | Strict CSP and Trusted Types make injection very hard; non-extractable keys mean raw keys cannot be exported (though a script running in the page can still **use** any unlocked `CryptoKey` currently in memory) |
 | Malicious dependency | Compromised npm or crates package | Minimal dependencies, pinned versions, delayed upgrades, CI audits |
 | Stolen unlocked device | Physical access | Auto-lock; reveal needs fresh biometric/passkey |
 | Malware on user's device | Keylogger or screen capture | **Out of scope** (stated openly in our docs) |
@@ -64,26 +64,26 @@ The only crypto-adjacent npm dependency is the OPAQUE client. Everything else us
 ### 5.1 Secrets a user holds
 
 - **Master password:** chosen by the user. Minimum 12 characters, with a strength meter (zxcvbn) that blocks weak choices and a check against breached passwords via the Have I Been Pwned k-anonymity range API.
-- **Secret Key:** 128 random bits generated in the browser at signup, formatted like `A3-XXXXXX-XXXXXX-XXXXX`. It is shown once in a downloadable **Emergency Kit** (client-side generated PDF) and stored on the device encrypted under a non-extractable device key. Required to sign in on any new device.
+- **Secret Key:** 128 random bits generated in the browser at signup, formatted like `A3-XXXXXX-XXXXXX-XXXXX-XXXXX-XXXXX` (27 RFC 4648 Base32 characters encoding 128 bits of random key material plus a 7-bit CRC-7 checksum using polynomial $G(x) = x^7 + x^3 + 1$, 7-bit tap mask `0x09` / full polynomial `0x89`, pre-seeded with `0x5A`). It is shown once in a downloadable **Emergency Kit** (client-side generated PDF, *Planned*) and stored on the device encrypted under a non-extractable device key (*Planned*). Required to sign in on any new device.
 
 Because the Secret Key has 128 bits of entropy and never touches the server, an attacker who steals the database **and** the server's OPAQUE key still faces a 128-bit search no matter how weak the master password is.
 
 ### 5.2 Key hierarchy
 
-1. `pw_input = HKDF(master_password || Secret Key)`. This is the input to OPAQUE registration and login.
+1. `pw_input = HKDF-SHA-256(ikm = NFKC-normalized UTF-8 master password, salt = the 16 raw Secret Key bytes, info = "strongroom-pw-input-v1", 32 bytes)`. This is the input to OPAQUE registration and login.
 2. OPAQUE produces an **export key** that only the client can derive.
 3. `KEK = HKDF(export_key, secret_key, "vault-kek-v1")`. Never leaves the browser.
-4. **Vault Metadata Key (K\_m)** and **Vault Secret Key (K\_s)** are random 256-bit keys generated at signup. They are stored on the server only **wrapped** (AES-256-GCM) under the KEK.
+4. **Vault Metadata Key (K\_m)** and **Vault Secret Key (K\_s)** are random 256-bit keys generated at signup. They are stored on the server only **wrapped** (AES-256-GCM) under the KEK with distinct AAD purposes (`vault-key-km` and `vault-key-ks-master`).
 5. Each item has its own random 256-bit **item key**. The item's metadata (title, URL, username, notes) is encrypted with an item key wrapped by K\_m. The item's secret (password, TOTP seed, recovery codes) uses an item key wrapped by K\_s.
-6. A second wrapped copy of K\_s exists under each registered passkey's **PRF-derived key** (section 6).
+6. A second wrapped copy of K\_s exists under each registered passkey's **PRF-derived key** (`vault-key-ks-prf`, binding the passkey `credential_id`; see section 6).
 
 Why two vault keys: the vault list can be browsed and searched with K\_m, while K\_s is held in memory only for seconds, at the moment of reveal.
 
 ### 5.3 Item encryption rules
 
-- A fresh random 96-bit nonce for every encryption; a fresh item key per item (this removes any GCM nonce-reuse concern).
-- **Authenticated associated data (AAD)** binds every ciphertext to `user_id || item_id || key_version || schema_version`, so the server cannot swap, replay, or roll back items undetected.
-- **Metadata is encrypted too.** The server sees only opaque IDs, timestamps, and padded ciphertext size (padded to 256-byte buckets). Search is client-side.
+- **Nonce and key reuse bounds:** Item data (`meta_blob`, `secret_blob`) uses a fresh random 256-bit per-item key and a fresh random 96-bit nonce for every encryption. Wrapping keys (`KEK`, `K_m`, `K_s`, and PRF wrapping keys) use random 96-bit nonces and encrypt very few messages per user, remaining far below the NIST SP 800-38D birthday-bound limit of $2^{32}$ invocations per key.
+- **Authenticated associated data (AAD)** binds every ciphertext to its domain purpose (`item-meta`, `item-secret`, `item-key-m`, `item-key-s`, `vault-key-km`, `vault-key-ks-master`, `vault-key-ks-prf`), `user_id`, `item_id` (or passkey `credential_id` for `vault-key-ks-prf`), `key_version`, `schema_version`, and `revision`, so the server cannot swap, replay, or roll back individual items undetected.
+- **Metadata is encrypted too.** The server sees only opaque IDs, timestamps, and padded ciphertext size (padded to 256-byte buckets). Padding is validated only after AES-256-GCM authentication succeeds. Search is client-side.
 - Versioned envelope format on every blob, so algorithms can be migrated.
 
 ### 5.4 Master password change and rotation
@@ -99,7 +99,7 @@ Why two vault keys: the vault list can be browsed and searched with K\_m, while 
 ## 6. Biometrics and passkeys
 
 - Users register one or more passkeys (platform: Face ID, Touch ID, Windows Hello, Android biometrics; or roaming: YubiKey) with `userVerification: "required"` and the PRF extension enabled.
-- On registration, the authenticator returns PRF output. The browser derives a wrapping key and stores a copy of K\_s wrapped under it. The PRF output never leaves the browser.
+- On registration, the authenticator returns PRF output. The browser derives a 256-bit AES-GCM wrapping key via `HKDF-SHA-256(ikm = prf_output, salt = credential_id, info = "strongroom-prf-kek-v1", 32 bytes)` (*Planned*) and stores a copy of K\_s wrapped under it (`vault-key-ks-prf`, binding `credential_id` in AAD). The PRF output never leaves the browser.
 - **Reveal flow:** the user taps Reveal; the browser triggers a WebAuthn assertion with PRF; the biometric/PIN check releases the PRF output; K\_s is unwrapped; the secret is decrypted, displayed, and K\_s is wiped from memory after at most 30 seconds.
 - **Fallback when PRF is unsupported:** re-enter the master password (the Secret Key is already on the device). The UI says plainly that biometric gating is unavailable on this device and why.
 - **Second factor at login:** WebAuthn (passkey or security key) is the default and strongly preferred. TOTP is allowed as a fallback. 2FA is **mandatory** for all accounts. Ten single-use recovery codes are issued, shown once, and stored hashed.
@@ -120,7 +120,7 @@ Why two vault keys: the vault list can be browsed and searched with K\_m, while 
 
 ## 8. Client-side security requirements
 
-- Keys live in memory only, as **non-extractable `CryptoKey` objects** wherever the algorithm allows. No keys in `localStorage`, `sessionStorage`, cookies, or the URL.
+- Keys live in memory only, as **non-extractable `CryptoKey` objects** wherever the algorithm allows (except short-lived, function-local keys during wrapping/re-wrapping, which never leave the function). Note that a script running in the page can still **use** unlocked `CryptoKey` objects in memory; `extractable = false` only prevents exporting raw key bytes. Wrapping keys (`KEK`, `K_m`, `K_s`, PRF wrapping keys) receive only `['wrapKey', 'unwrapKey']` usages, and leaf item keys receive only `['encrypt', 'decrypt']` usages. No keys in `localStorage`, `sessionStorage`, cookies, or the URL.
 - The only persisted material on a device is the Secret Key, wrapped under a non-extractable device key in IndexedDB.
 - **Auto-lock:** after 5 minutes idle (user-configurable down to 1 minute, never off), on logout, and on tab close. Locking zeroes buffers and drops key references.
 - Revealed passwords auto-hide after 15 seconds.
