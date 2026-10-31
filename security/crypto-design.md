@@ -205,3 +205,11 @@ Byte Offset  Length               Field
 1. **Known-Answer & Property Tests:** Unit tests against official RFC 5869 (HKDF-SHA-256) and IEEE 802.1AE / McGrew & Viega GCM specification known-answer test vectors, cross-implementation verification against `node:crypto`, and tampering/property tests for versioned envelope encoding/decoding and AAD mismatches (**Planned:** full NIST CAVP test suite & fuzzing).
 2. **Server Decryption-Impossibility Test (F1 Exit Gate — *Planned*):** Automated test proving that an attacker holding the complete database record and server secrets cannot decrypt `wrapped_km`, `wrapped_ks_master`, `meta_blob`, or `secret_blob`.
 3. **PRF Bypass Test (F4 Exit Gate — *Planned*):** Automated test proving that a modified UI skipping the WebAuthn prompt cannot decrypt `secret_blob` because `K_s` is absent from memory without PRF output.
+
+---
+
+## 9. Accepted Limitations
+
+1. **Pre-Execution Script Hooking & Transient Key Interception:** A script that runs before our code can hook browser crypto functions (`crypto.subtle.*`, `crypto.getRandomValues`) and intercept transient keys. This is an inherent browser execution environment limitation, mitigated only by Content Security Policy (CSP), Trusted Types, Subresource Integrity (SRI), and maintaining a minimal, audited dependency count.
+2. **JavaScript Memory Pinning & Zeroing Limitations:** JavaScript memory cannot be pinned or zeroed reliably. While Strongroom performs best-effort zeroing of mutable `Uint8Array` and `ArrayBuffer` instances via `wipeBuffer`/`wipeBuffers` in `finally` blocks, the engine may create transient copies during GC, compaction, or string conversions that JavaScript cannot explicitly pin in RAM or wipe.
+3. **No Whole-Vault Rollback Detection Until Vault Manifest Exists:** While per-item revision numbers are authenticated in AAD (preventing mismatched revision replays for a given item), there is no whole-vault rollback detection until the vault manifest exists. A compromised server serving an entire stale vault state or omitting recently created/deleted items cannot yet be detected cryptographically client-side without a signed vault manifest root.

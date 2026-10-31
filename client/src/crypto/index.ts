@@ -27,14 +27,8 @@ export {
 export { secureRandom } from './random.ts';
 
 export {
-  HKDF_SHA256_HASH_LEN,
-  HKDF_SHA256_MAX_LENGTH,
-  PASSWORD_INPUT_BYTES,
-  PASSWORD_INPUT_INFO,
-  VAULT_KEK_INFO,
   deriveKek,
   derivePasswordInput,
-  hkdf,
 } from './hkdf.ts';
 
 export {
@@ -57,9 +51,15 @@ export {
   type AadParams,
   type AadPurpose,
   type BaseAadParams,
+  type DataAadParams,
+  type DataAadPurpose,
   type ItemAadContext,
   type ItemAadPurpose,
+  type ItemKeyAadParams,
+  type ItemKeyAadPurpose,
   type ItemPurposeAadParams,
+  type KeyWrapAadParams,
+  type KeyWrapAadPurpose,
   type VaultKeyAadPurpose,
   type VaultKeyMasterAadParams,
   type VaultKeyMasterAadPurpose,

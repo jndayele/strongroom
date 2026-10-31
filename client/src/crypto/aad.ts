@@ -14,13 +14,14 @@ export const AAD_PURPOSES = [
 ] as const;
 
 export type AadPurpose = (typeof AAD_PURPOSES)[number];
-export type ItemAadPurpose =
-  | 'item-meta'
-  | 'item-secret'
-  | 'item-key-m'
-  | 'item-key-s';
+export type DataAadPurpose = 'item-meta' | 'item-secret';
+export type ItemKeyAadPurpose = 'item-key-m' | 'item-key-s';
+export type ItemAadPurpose = DataAadPurpose | ItemKeyAadPurpose;
 export type VaultKeyMasterAadPurpose = 'vault-key-km' | 'vault-key-ks-master';
 export type VaultKeyAadPurpose = VaultKeyMasterAadPurpose | 'vault-key-ks-prf';
+export type KeyWrapAadPurpose = VaultKeyAadPurpose | ItemKeyAadPurpose;
+
+const VALID_PURPOSE_SET: ReadonlySet<string> = new Set<string>(AAD_PURPOSES);
 
 /**
  * Maximum allowed byte length (256 bytes) for `userId`, `itemId`, and
@@ -35,32 +36,45 @@ export interface BaseAadParams {
   readonly schemaVersion: number;
 }
 
-export interface ItemPurposeAadParams extends BaseAadParams {
-  readonly purpose: ItemAadPurpose;
+export interface DataAadParams extends BaseAadParams {
+  readonly purpose: DataAadPurpose;
+  readonly credentialId?: never;
   readonly revision: number;
 }
+
+export interface ItemKeyAadParams extends BaseAadParams {
+  readonly purpose: ItemKeyAadPurpose;
+  readonly credentialId?: never;
+  readonly revision: number;
+}
+
+export type ItemPurposeAadParams = DataAadParams | ItemKeyAadParams;
 
 export interface VaultKeyMasterAadParams {
   readonly purpose: VaultKeyMasterAadPurpose;
   readonly userId: string | Uint8Array;
-  readonly itemId?: string | Uint8Array;
+  readonly itemId?: never;
+  readonly credentialId?: never;
   readonly keyVersion: number;
   readonly schemaVersion: number;
-  readonly revision?: number;
+  readonly revision?: never;
 }
 
 export interface VaultKeyPrfAadParams {
   readonly purpose: 'vault-key-ks-prf';
   readonly userId: string | Uint8Array;
+  readonly itemId?: never;
   readonly credentialId: string | Uint8Array;
   readonly keyVersion: number;
   readonly schemaVersion: number;
-  readonly revision?: number;
+  readonly revision?: never;
 }
 
 export type VaultKeyWrapAadParams =
   | VaultKeyMasterAadParams
   | VaultKeyPrfAadParams;
+
+export type KeyWrapAadParams = VaultKeyWrapAadParams | ItemKeyAadParams;
 
 /**
  * Authenticated Associated Data (AAD) fields binding every ciphertext and
@@ -81,7 +95,7 @@ export interface ItemAadContext extends BaseAadParams {
 
 const MAX_UINT32 = 0xffffffff;
 
-function toBoundedNonEmptyBytes(value: string | Uint8Array): Uint8Array {
+export function toBoundedNonEmptyBytes(value: string | Uint8Array): Uint8Array {
   if (typeof value === 'string') {
     if (value.length === 0 || value.length > MAX_AAD_ID_BYTES) {
       throw new CryptoArgumentError();
@@ -103,12 +117,6 @@ function toBoundedNonEmptyBytes(value: string | Uint8Array): Uint8Array {
 
 function assertPositiveUint32(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_UINT32) {
-    throw new CryptoArgumentError();
-  }
-}
-
-function assertNonNegativeUint32(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_UINT32) {
     throw new CryptoArgumentError();
   }
 }
@@ -137,7 +145,10 @@ export function encodeAad(params: AadParams): Uint8Array {
     throw new CryptoArgumentError();
   }
 
-  if (typeof params.purpose !== 'string') {
+  if (
+    typeof params.purpose !== 'string' ||
+    !VALID_PURPOSE_SET.has(params.purpose)
+  ) {
     throw new CryptoArgumentError();
   }
 
@@ -146,6 +157,7 @@ export function encodeAad(params: AadParams): Uint8Array {
   const rawRecord = params as {
     readonly itemId?: unknown;
     readonly credentialId?: unknown;
+    readonly revision?: unknown;
   };
 
   let targetIdBytes: Uint8Array;
@@ -153,32 +165,39 @@ export function encodeAad(params: AadParams): Uint8Array {
 
   switch (params.purpose) {
     case 'vault-key-ks-prf': {
-      if (rawRecord.itemId !== undefined) {
+      if (
+        'itemId' in params ||
+        rawRecord.itemId !== undefined ||
+        'revision' in params ||
+        rawRecord.revision !== undefined
+      ) {
         throw new CryptoArgumentError();
       }
       targetIdBytes = toBoundedNonEmptyBytes(params.credentialId);
-      revisionValue = params.revision ?? 0;
-      assertNonNegativeUint32(revisionValue);
+      revisionValue = 0;
       break;
     }
     case 'vault-key-km':
     case 'vault-key-ks-master': {
-      if (rawRecord.credentialId !== undefined) {
+      if (
+        'itemId' in params ||
+        rawRecord.itemId !== undefined ||
+        'credentialId' in params ||
+        rawRecord.credentialId !== undefined ||
+        'revision' in params ||
+        rawRecord.revision !== undefined
+      ) {
         throw new CryptoArgumentError();
       }
-      targetIdBytes =
-        params.itemId !== undefined
-          ? toBoundedNonEmptyBytes(params.itemId)
-          : purposeBytes;
-      revisionValue = params.revision ?? 0;
-      assertNonNegativeUint32(revisionValue);
+      targetIdBytes = purposeBytes;
+      revisionValue = 0;
       break;
     }
     case 'item-meta':
     case 'item-secret':
     case 'item-key-m':
     case 'item-key-s': {
-      if (rawRecord.credentialId !== undefined) {
+      if ('credentialId' in params || rawRecord.credentialId !== undefined) {
         throw new CryptoArgumentError();
       }
       targetIdBytes = toBoundedNonEmptyBytes(params.itemId);

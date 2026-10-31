@@ -11,25 +11,30 @@ import {
   CryptoArgumentError,
   DECRYPTION_ERROR_MESSAGE,
   DecryptionError,
+  type DataAadParams,
+  type DataAadPurpose,
   ENVELOPE_HEADER_BYTES,
   ENVELOPE_OVERHEAD_BYTES,
   ENVELOPE_VERSION_V1,
   INVALID_SECRET_KEY_MESSAGE,
   InvalidSecretKeyError,
   type ItemAadContext,
+  type ItemKeyAadParams,
+  type ItemKeyAadPurpose,
+  type KeyWrapAadParams,
+  type KeyWrapAadPurpose,
   MAX_AAD_ID_BYTES,
   MAX_ENCRYPTED_ENVELOPE_BYTES,
   MAX_PLAINTEXT_BYTES,
   MAX_SECRET_KEY_INPUT_LENGTH,
   PADDING_BUCKET_BYTES,
   PADDING_LENGTH_PREFIX_BYTES,
-  PASSWORD_INPUT_BYTES,
-  PASSWORD_INPUT_INFO,
   SECRET_KEY_BASE32_ALPHABET,
   SECRET_KEY_BASE32_CHARS,
   SECRET_KEY_BYTES,
   SECRET_KEY_PREFIX,
-  VAULT_KEK_INFO,
+  type VaultKeyMasterAadParams,
+  type VaultKeyPrfAadParams,
   WRAPPED_KEY_ENVELOPE_BYTES,
   assertValidKeyUsages,
   constantTimeEqual,
@@ -47,7 +52,6 @@ import {
   formatSecretKey,
   generateSecretKey,
   getWebCrypto,
-  hkdf,
   maxPaddedBytesForOverhead,
   padToBucket,
   parseSecretKey,
@@ -60,6 +64,12 @@ import {
   wipeBuffers,
   wrapKey,
 } from './index.ts';
+import {
+  PASSWORD_INPUT_BYTES,
+  PASSWORD_INPUT_INFO,
+  VAULT_KEK_INFO,
+  hkdf,
+} from './hkdf.ts';
 import { generateAesGcmKey, importAesGcmKey } from './aesGcm.ts';
 import { encodeEnvelope } from './envelope.ts';
 
@@ -172,6 +182,65 @@ function concatBytes(...arrays: ReadonlyArray<Uint8Array>): Uint8Array {
 }
 
 function makeAadForPurpose(
+  purpose: 'vault-key-km' | 'vault-key-ks-master',
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+  }>,
+): VaultKeyMasterAadParams;
+function makeAadForPurpose(
+  purpose: 'vault-key-ks-prf',
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly credentialId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+  }>,
+): VaultKeyPrfAadParams;
+function makeAadForPurpose(
+  purpose: DataAadPurpose,
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly itemId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+    readonly revision: number;
+  }>,
+): DataAadParams;
+function makeAadForPurpose(
+  purpose: ItemKeyAadPurpose,
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly itemId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+    readonly revision: number;
+  }>,
+): ItemKeyAadParams;
+function makeAadForPurpose(
+  purpose: KeyWrapAadPurpose,
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly itemId: string | Uint8Array;
+    readonly credentialId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+    readonly revision: number;
+  }>,
+): KeyWrapAadParams;
+function makeAadForPurpose(
+  purpose: AadPurpose,
+  overrides?: Partial<{
+    readonly userId: string | Uint8Array;
+    readonly itemId: string | Uint8Array;
+    readonly credentialId: string | Uint8Array;
+    readonly keyVersion: number;
+    readonly schemaVersion: number;
+    readonly revision: number;
+  }>,
+): AadParams;
+function makeAadForPurpose(
   purpose: AadPurpose,
   overrides?: Partial<{
     readonly userId: string | Uint8Array;
@@ -188,33 +257,35 @@ function makeAadForPurpose(
 
   if (purpose === 'vault-key-ks-prf') {
     const credentialId = overrides?.credentialId ?? 'cred-passkey-9999';
-    return overrides?.revision !== undefined
-      ? {
-          purpose,
-          userId,
-          credentialId,
-          keyVersion,
-          schemaVersion,
-          revision: overrides.revision,
-        }
-      : {
-          purpose,
-          userId,
-          credentialId,
-          keyVersion,
-          schemaVersion,
-        };
+    return {
+      purpose,
+      userId,
+      credentialId,
+      keyVersion,
+      schemaVersion,
+      ...(overrides && 'revision' in overrides
+        ? { revision: overrides.revision as never }
+        : {}),
+      ...(overrides && 'itemId' in overrides
+        ? { itemId: overrides.itemId as never }
+        : {}),
+    };
   }
 
   if (purpose === 'vault-key-km' || purpose === 'vault-key-ks-master') {
     return {
       purpose,
       userId,
-      ...(overrides?.itemId !== undefined ? { itemId: overrides.itemId } : {}),
       keyVersion,
       schemaVersion,
-      ...(overrides?.revision !== undefined
-        ? { revision: overrides.revision }
+      ...(overrides && 'revision' in overrides
+        ? { revision: overrides.revision as never }
+        : {}),
+      ...(overrides && 'itemId' in overrides
+        ? { itemId: overrides.itemId as never }
+        : {}),
+      ...(overrides && 'credentialId' in overrides
+        ? { credentialId: overrides.credentialId as never }
         : {}),
     };
   }
@@ -696,6 +767,79 @@ async function testKeyUsagesAndNonExtractability(): Promise<void> {
     !exportedNames.includes('resolveAadBytes'),
     'index.ts must not export resolveAadBytes',
   );
+  assert(!exportedNames.includes('hkdf'), 'index.ts must not export hkdf');
+  assert(
+    !exportedNames.includes('VAULT_KEK_INFO'),
+    'index.ts must not export VAULT_KEK_INFO',
+  );
+  assert(
+    exportedNames.includes('derivePasswordInput'),
+    'index.ts must export derivePasswordInput',
+  );
+  assert(exportedNames.includes('deriveKek'), 'index.ts must export deriveKek');
+  assert(
+    AAD_PURPOSES.length === 7,
+    'AAD_PURPOSES exports exactly 7 domain separation purposes',
+  );
+
+  // Item 4 tests: isAes256GcmKey rejects forged plain objects and algorithm: null
+  // Both must throw CryptoArgumentError from public functions, never a native TypeError.
+  const forgedDataKey = {
+    type: 'secret',
+    extractable: false,
+    usages: ['encrypt', 'decrypt'],
+    algorithm: { name: 'AES-GCM', length: 256 },
+  } as unknown as CryptoKey;
+
+  const forgedWrappingKey = {
+    type: 'secret',
+    extractable: false,
+    usages: ['wrapKey', 'unwrapKey'],
+    algorithm: { name: 'AES-GCM', length: 256 },
+  } as unknown as CryptoKey;
+
+  const nullAlgKey = {
+    type: 'secret',
+    extractable: false,
+    usages: ['encrypt', 'decrypt'],
+    algorithm: null,
+  } as unknown as CryptoKey;
+
+  const nullAlgWrappingKey = {
+    type: 'secret',
+    extractable: false,
+    usages: ['wrapKey', 'unwrapKey'],
+    algorithm: null,
+  } as unknown as CryptoKey;
+
+  const probePayload = new Uint8Array([1, 2, 3]);
+  const probeAad = makeAadForPurpose('item-meta');
+  const probeWrapAad = makeAadForPurpose('vault-key-km');
+
+  await assertRejectsWithCryptoArgumentError(
+    () => encrypt(forgedDataKey, probePayload, probeAad),
+    'encrypt with forged CryptoKey must throw CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    () => encrypt(nullAlgKey, probePayload, probeAad),
+    'encrypt with algorithm: null must throw CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    () => wrapKey(forgedWrappingKey, secureRandom(32), probeWrapAad),
+    'wrapKey with forged CryptoKey must throw CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    () => wrapKey(nullAlgWrappingKey, secureRandom(32), probeWrapAad),
+    'wrapKey with algorithm: null must throw CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    () => createAndWrapVaultKey(forgedWrappingKey, probeWrapAad),
+    'createAndWrapVaultKey with forged CryptoKey must throw CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    () => createAndWrapVaultKey(nullAlgWrappingKey, probeWrapAad),
+    'createAndWrapVaultKey with algorithm: null must throw CryptoArgumentError',
+  );
 
   // Mixing wrapping usages and data usages must throw CryptoArgumentError everywhere
   const mixedUsageSets: ReadonlyArray<ReadonlyArray<KeyUsage>> = [
@@ -1147,10 +1291,14 @@ async function testRoundTripsRewrapAndPadding(): Promise<void> {
     'Old KEK must fail to unwrap PRF re-wrapped K_s envelope',
   );
 
-  // Wrong old AAD fails in rewrapKey
+  // Wrong old AAD fails in rewrapKey: both ksMasterAadV1 and ksPrfAadV1 must fail
   await assertRejectsWithDecryptionError(
     () => rewrapKey(oldKek, wrappedKmOld, ksMasterAadV1, newKek, kmAadV1),
-    'rewrapKey with wrong oldAad purpose must fail',
+    'rewrapKey with wrong oldAad ksMasterAadV1 must fail',
+  );
+  await assertRejectsWithDecryptionError(
+    () => rewrapKey(oldKek, wrappedKmOld, ksPrfAadV1, newKek, kmAadV1),
+    'rewrapKey with wrong oldAad ksPrfAadV1 must fail',
   );
   await assertRejectsWithDecryptionError(
     () =>
@@ -1162,6 +1310,111 @@ async function testRoundTripsRewrapAndPadding(): Promise<void> {
         kmAadV1,
       ),
     'rewrapKey with wrong oldAad userId must fail',
+  );
+
+  // Item 2 tests: rewrapKey cross-slot, same userId, and keyVersion monotonicity checks
+  // 1. Cross-slot checks: K_m only to K_m; K_s only to K_s (master or PRF)
+  await assertRejectsWithDecryptionError(
+    () => rewrapKey(oldKek, wrappedKmOld, kmAadV1, newKek, ksMasterAadV1),
+    'rewrapKey must reject K_m -> K_s master cross-slot re-wrap',
+  );
+  await assertRejectsWithDecryptionError(
+    () => rewrapKey(oldKek, wrappedKmOld, kmAadV1, prfWrappingKey, ksPrfAadV1),
+    'rewrapKey must reject K_m -> K_s PRF cross-slot re-wrap',
+  );
+  await assertRejectsWithDecryptionError(
+    () => rewrapKey(oldKek, wrappedKsOld, ksMasterAadV1, newKek, kmAadV1),
+    'rewrapKey must reject K_s master -> K_m cross-slot re-wrap',
+  );
+  await assertRejectsWithDecryptionError(
+    () =>
+      rewrapKey(prfWrappingKey, wrappedKsPrf, ksPrfAadV1, newKek, kmAadV1),
+    'rewrapKey must reject K_s PRF -> K_m cross-slot re-wrap',
+  );
+
+  // Valid K_s re-wraps: master -> master, master -> PRF (tested above), PRF -> master, PRF -> PRF
+  const wrappedKsMasterFromPrf = await rewrapKey(
+    prfWrappingKey,
+    wrappedKsPrf,
+    ksPrfAadV1,
+    newKek,
+    ksMasterAadV1,
+  );
+  assert(
+    wrappedKsMasterFromPrf.byteLength === WRAPPED_KEY_ENVELOPE_BYTES,
+    'rewrapKey K_s PRF -> master succeeds',
+  );
+  const wrappedKsPrfFromMaster = await rewrapKey(
+    newKek,
+    wrappedKsMasterFromPrf,
+    ksMasterAadV1,
+    prfWrappingKey,
+    ksPrfAadV1,
+  );
+  assert(
+    wrappedKsPrfFromMaster.byteLength === WRAPPED_KEY_ENVELOPE_BYTES,
+    'rewrapKey K_s master -> PRF succeeds',
+  );
+
+  // 2. userId match: must reject different userId even if oldEnvelope decrypts
+  const differentUserAad = makeAadForPurpose('vault-key-km', {
+    userId: 'different-user-9999',
+    keyVersion: 1,
+  });
+  await assertRejectsWithDecryptionError(
+    () =>
+      rewrapKey(
+        oldKek,
+        wrappedKmOld,
+        kmAadV1,
+        newKek,
+        differentUserAad,
+      ),
+    'rewrapKey must reject newAad with different userId',
+  );
+
+  // Matching userId where one is string and one is Uint8Array must succeed
+  const userIdBytesAad = makeAadForPurpose('vault-key-km', {
+    userId: new TextEncoder().encode('user-1111-2222'),
+    keyVersion: 1,
+  });
+  const wrappedWithUint8UserId = await rewrapKey(
+    oldKek,
+    wrappedKmOld,
+    kmAadV1,
+    newKek,
+    userIdBytesAad,
+  );
+  assert(
+    wrappedWithUint8UserId.byteLength === WRAPPED_KEY_ENVELOPE_BYTES,
+    'rewrapKey succeeds when userId bytes match string userId',
+  );
+
+  // 3. keyVersion monotonicity: newAad.keyVersion >= oldAad.keyVersion
+  const kmAadV2 = makeAadForPurpose('vault-key-km', { keyVersion: 2 });
+  const wrappedKmV2 = await rewrapKey(
+    oldKek,
+    wrappedKmOld,
+    kmAadV1,
+    newKek,
+    kmAadV2,
+  );
+  assert(
+    wrappedKmV2.byteLength === WRAPPED_KEY_ENVELOPE_BYTES,
+    'rewrapKey allows advancing keyVersion (1 -> 2)',
+  );
+
+  // Attempting to downgrade keyVersion (2 -> 1) must be rejected
+  await assertRejectsWithDecryptionError(
+    () =>
+      rewrapKey(
+        newKek,
+        wrappedKmV2,
+        kmAadV2,
+        newKek,
+        kmAadV1,
+      ),
+    'rewrapKey must reject keyVersion rollback (2 -> 1)',
   );
 
   // Unwrap K_m under newKek and K_s under prfWrappingKey and verify item decryption succeeds
@@ -1206,30 +1459,7 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
   const payload = secureRandom(64);
   const rawKeyToWrap = secureRandom(AES_256_KEY_BYTES);
 
-  // 5a. Exhaustive 7x6 cross-purpose check: ciphertext and wrapped key made
-  //     for one purpose MUST fail under every other purpose.
-  for (const sourcePurpose of AAD_PURPOSES) {
-    const sourceAad = makeAadForPurpose(sourcePurpose, { revision: 1 });
-    const ct = await encrypt(dataKey, payload, sourceAad);
-    const wrapped = await wrapKey(wrappingKey, rawKeyToWrap, sourceAad);
-
-    for (const targetPurpose of AAD_PURPOSES) {
-      if (targetPurpose === sourcePurpose) {
-        continue;
-      }
-      const targetAad = makeAadForPurpose(targetPurpose, { revision: 1 });
-      await assertRejectsWithDecryptionError(
-        () => decrypt(dataKey, ct, targetAad),
-        `decrypt ciphertext made for "${sourcePurpose}" under "${targetPurpose}"`,
-      );
-      await assertRejectsWithDecryptionError(
-        () => unwrapKey(wrappingKey, wrapped, targetAad),
-        `unwrapKey made for "${sourcePurpose}" under "${targetPurpose}"`,
-      );
-    }
-  }
-
-  // 5b. Wrapped K_s placed in the K_m slot fails to unwrap, and vice versa;
+  // 5a. Wrapped K_s placed in the K_m slot fails to unwrap, and vice versa;
   //     a ks-master blob fails under ks-prf, and ks-prf fails under a different credential_id.
   const kmAad = makeAadForPurpose('vault-key-km');
   const ksMasterAad = makeAadForPurpose('vault-key-ks-master');
@@ -1240,6 +1470,41 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
     credentialId: 'cred-id-2',
   });
 
+  // Item 1 boundary whitelist checks:
+  // createAndWrapVaultKey only allows vault-key-km and vault-key-ks-master
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- createAndWrapVaultKey rejects vault-key-ks-prf
+    () => createAndWrapVaultKey(wrappingKey, ksPrfAad1),
+    'createAndWrapVaultKey must reject vault-key-ks-prf',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- createAndWrapVaultKey rejects item-key-m
+    () => createAndWrapVaultKey(wrappingKey, makeAadForPurpose('item-key-m')),
+    'createAndWrapVaultKey must reject item-key-m',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- createAndWrapVaultKey rejects item-meta
+    () => createAndWrapVaultKey(wrappingKey, makeAadForPurpose('item-meta')),
+    'createAndWrapVaultKey must reject item-meta',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- createAndWrapVaultKey rejects item-secret
+    () => createAndWrapVaultKey(wrappingKey, makeAadForPurpose('item-secret')),
+    'createAndWrapVaultKey must reject item-secret',
+  );
+
+  // wrapKey and unwrapKey only allow vault-key-* and item-key-* (reject item-meta and item-secret)
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- wrapKey rejects item-meta
+    () => wrapKey(wrappingKey, rawKeyToWrap, makeAadForPurpose('item-meta')),
+    'wrapKey must reject item-meta',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- wrapKey rejects item-secret
+    () => wrapKey(wrappingKey, rawKeyToWrap, makeAadForPurpose('item-secret')),
+    'wrapKey must reject item-secret',
+  );
+
   const { wrappedKey: wrappedKm } = await createAndWrapVaultKey(
     wrappingKey,
     kmAad,
@@ -1248,10 +1513,59 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
     wrappingKey,
     ksMasterAad,
   );
-  const { wrappedKey: wrappedKsPrf1 } = await createAndWrapVaultKey(
+  // wrappedKsPrf1 is wrapped with wrapKey, as createAndWrapVaultKey is only for km and ks-master
+  const wrappedKsPrf1 = await wrapKey(
     wrappingKey,
+    rawKeyToWrap,
     ksPrfAad1,
   );
+
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- unwrapKey rejects item-meta
+    () => unwrapKey(wrappingKey, wrappedKm, makeAadForPurpose('item-meta')),
+    'unwrapKey must reject item-meta with CryptoArgumentError',
+  );
+  await assertRejectsWithCryptoArgumentError(
+    // @ts-expect-error -- unwrapKey rejects item-secret
+    () => unwrapKey(wrappingKey, wrappedKm, makeAadForPurpose('item-secret')),
+    'unwrapKey must reject item-secret with CryptoArgumentError',
+  );
+
+  // encrypt and decrypt only allow item-meta and item-secret
+  for (const nonDataPurpose of [
+    'vault-key-km',
+    'vault-key-ks-master',
+    'vault-key-ks-prf',
+    'item-key-m',
+    'item-key-s',
+  ] as const) {
+    const nonDataAad = makeAadForPurpose(nonDataPurpose);
+    await assertRejectsWithCryptoArgumentError(
+      // @ts-expect-error -- encrypt rejects non-data purpose
+      () => encrypt(dataKey, payload, nonDataAad),
+      `encrypt must reject purpose ${nonDataPurpose} with CryptoArgumentError`,
+    );
+  }
+
+  const validMetaCt = await encrypt(
+    dataKey,
+    payload,
+    makeAadForPurpose('item-meta'),
+  );
+  for (const nonDataPurpose of [
+    'vault-key-km',
+    'vault-key-ks-master',
+    'vault-key-ks-prf',
+    'item-key-m',
+    'item-key-s',
+  ] as const) {
+    const nonDataAad = makeAadForPurpose(nonDataPurpose);
+    await assertRejectsWithCryptoArgumentError(
+      // @ts-expect-error -- decrypt rejects non-data purpose
+      () => decrypt(dataKey, validMetaCt, nonDataAad),
+      `decrypt must reject purpose ${nonDataPurpose} with CryptoArgumentError`,
+    );
+  }
 
   await assertRejectsWithDecryptionError(
     () => unwrapKey(wrappingKey, wrappedKsMaster, kmAad),
@@ -1274,6 +1588,183 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
     'ks-prf blob must fail to unwrap under a different passkey credential_id',
   );
 
+  // 5b. Cross-purpose checks:
+  // Data ciphertexts (item-meta, item-secret):
+  //   - mismatched data purpose fails with DecryptionError
+  //   - unwrapping under key purpose fails with CryptoArgumentError
+  const dataPurposes = ['item-meta', 'item-secret'] as const;
+  const keyWrapPurposes = [
+    'item-key-m',
+    'item-key-s',
+    'vault-key-km',
+    'vault-key-ks-master',
+    'vault-key-ks-prf',
+  ] as const;
+
+  for (const sourcePurpose of dataPurposes) {
+    const sourceAad = makeAadForPurpose(sourcePurpose, { revision: 1 });
+    const ct = await encrypt(dataKey, payload, sourceAad);
+
+    for (const targetPurpose of dataPurposes) {
+      if (targetPurpose === sourcePurpose) {
+        continue;
+      }
+      const targetAad = makeAadForPurpose(targetPurpose, { revision: 1 });
+      await assertRejectsWithDecryptionError(
+        () => decrypt(dataKey, ct, targetAad),
+        `decrypt ciphertext made for "${sourcePurpose}" under "${targetPurpose}"`,
+      );
+    }
+    for (const nonDataTarget of keyWrapPurposes) {
+      const nonDataAad = makeAadForPurpose(nonDataTarget);
+      await assertRejectsWithCryptoArgumentError(
+        // @ts-expect-error -- decrypt rejects non-data purpose
+        () => decrypt(dataKey, ct, nonDataAad),
+        `decrypt ciphertext made for "${sourcePurpose}" under "${nonDataTarget}" must reject with CryptoArgumentError`,
+      );
+    }
+  }
+
+  // Wrapped keys (vault-key-*, item-key-*):
+  //   - mismatched key purpose fails with DecryptionError
+  //   - unwrapping under data purpose fails with CryptoArgumentError
+  for (const sourcePurpose of keyWrapPurposes) {
+    const sourceAad = makeAadForPurpose(sourcePurpose);
+    const wrapped = await wrapKey(wrappingKey, rawKeyToWrap, sourceAad);
+
+    for (const targetPurpose of keyWrapPurposes) {
+      if (targetPurpose === sourcePurpose) {
+        continue;
+      }
+      const targetAad = makeAadForPurpose(targetPurpose);
+      await assertRejectsWithDecryptionError(
+        () => unwrapKey(wrappingKey, wrapped, targetAad),
+        `unwrapKey made for "${sourcePurpose}" under "${targetPurpose}"`,
+      );
+    }
+    for (const dataTarget of dataPurposes) {
+      const dataAad = makeAadForPurpose(dataTarget, { revision: 1 });
+      await assertRejectsWithCryptoArgumentError(
+        // @ts-expect-error -- unwrapKey rejects data purpose
+        () => unwrapKey(wrappingKey, wrapped, dataAad),
+        `unwrapKey made for "${sourcePurpose}" under "${dataTarget}" must reject with CryptoArgumentError`,
+      );
+    }
+  }
+
+  // 5b-revision: Vault-key AAD params (km, ks-master, ks-prf) must forbid revision,
+  //               and always encode revision = 0.
+  for (const vaultPurpose of [
+    'vault-key-km',
+    'vault-key-ks-master',
+    'vault-key-ks-prf',
+  ] as const) {
+    for (const disallowedRevision of [1, 0, 99]) {
+      const aadWithRevision = {
+        purpose: vaultPurpose,
+        userId: 'user-1111-2222',
+        ...(vaultPurpose === 'vault-key-ks-prf'
+          ? { credentialId: 'cred-111' }
+          : {}),
+        keyVersion: 1,
+        schemaVersion: 1,
+        revision: disallowedRevision,
+      };
+      assertThrowsCryptoArgumentErrorSync(
+        // @ts-expect-error -- vault-key purposes forbid revision
+        () => encodeAad(aadWithRevision),
+        `${vaultPurpose} must reject revision=${disallowedRevision} in encodeAad`,
+      );
+    }
+  }
+
+  // Verify that valid vault-key AAD encodings always serialize revision = 0 in the final 4 bytes
+  for (const validVaultAad of [kmAad, ksMasterAad, ksPrfAad1]) {
+    const encoded = encodeAad(validVaultAad);
+    const dv = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+    const serializedRevision = dv.getUint32(encoded.byteLength - 4, false);
+    assert(
+      serializedRevision === 0,
+      `${validVaultAad.purpose} must serialize revision = 0 (got ${serializedRevision})`,
+    );
+  }
+
+  // 5b-purposeValidation: encodeAad must validate purpose before running TextEncoder
+  for (const badPurpose of ['not-a-valid-purpose', '', 'item-metaa', 'VAULT-KEY-KM']) {
+    assertThrowsCryptoArgumentErrorSync(
+      // @ts-expect-error -- invalid purpose
+      () => encodeAad({ purpose: badPurpose, userId: 'u', itemId: 'i', keyVersion: 1, schemaVersion: 1, revision: 1 }),
+      `encodeAad must reject invalid purpose "${badPurpose}" before running TextEncoder`,
+    );
+  }
+
+  // 5b-itemId: vault-key-km and vault-key-ks-master must reject ANY itemId
+  //            (ensuring exactly one canonical encoding per vault-key slot).
+  for (const masterPurpose of [
+    'vault-key-km',
+    'vault-key-ks-master',
+  ] as const) {
+    for (const disallowedItemId of [
+      masterPurpose,
+      'item-3333-4444',
+      new Uint8Array([1, 2, 3]),
+      '',
+      undefined,
+    ]) {
+      const aadWithItemId = {
+        purpose: masterPurpose,
+        userId: 'user-1111-2222',
+        itemId: disallowedItemId,
+        keyVersion: 1,
+        schemaVersion: 1,
+      };
+      assertThrowsCryptoArgumentErrorSync(
+        // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+        () => encodeAad(aadWithItemId),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in encodeAad`,
+      );
+      await assertRejectsWithCryptoArgumentError(
+        // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+        () => wrapKey(wrappingKey, rawKeyToWrap, aadWithItemId),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in wrapKey`,
+      );
+      await assertRejectsWithCryptoArgumentError(
+        // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+        () => createAndWrapVaultKey(wrappingKey, aadWithItemId),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in createAndWrapVaultKey`,
+      );
+      await assertRejectsWithDecryptionError(
+        // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+        () => unwrapKey(wrappingKey, wrappedKm, aadWithItemId),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in unwrapKey`,
+      );
+      await assertRejectsWithDecryptionError(
+        () =>
+          rewrapKey(
+            wrappingKey,
+            wrappedKm,
+            // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+            aadWithItemId,
+            wrappingKey,
+            kmAad,
+          ),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in rewrapKey oldAad`,
+      );
+      await assertRejectsWithDecryptionError(
+        () =>
+          rewrapKey(
+            wrappingKey,
+            wrappedKm,
+            kmAad,
+            wrappingKey,
+            // @ts-expect-error -- vault-key-km and vault-key-ks-master forbid itemId
+            aadWithItemId,
+          ),
+        `${masterPurpose} must reject itemId=${String(disallowedItemId)} in rewrapKey newAad`,
+      );
+    }
+  }
+
   // 5c. Raw Uint8Array passed as AAD is a compile-time type error AND runtime error
   const rawAadBytes = encodeAad(makeAadForPurpose('item-meta'));
   const validCt = await encrypt(
@@ -1291,7 +1782,7 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
     () => encrypt(dataKey, payload, rawAadBytes),
     'encrypt rejects raw Uint8Array AAD',
   );
-  await assertRejectsWithDecryptionError(
+  await assertRejectsWithCryptoArgumentError(
     // @ts-expect-error -- decrypt rejects raw Uint8Array AAD
     () => decrypt(dataKey, validCt, rawAadBytes),
     'decrypt rejects raw Uint8Array AAD',
@@ -1301,7 +1792,7 @@ async function testAadPurposeSeparationAndBounds(): Promise<void> {
     () => wrapKey(wrappingKey, rawKeyToWrap, rawAadBytes),
     'wrapKey rejects raw Uint8Array AAD',
   );
-  await assertRejectsWithDecryptionError(
+  await assertRejectsWithCryptoArgumentError(
     // @ts-expect-error -- unwrapKey rejects raw Uint8Array AAD
     () => unwrapKey(wrappingKey, wrappedKm, rawAadBytes),
     'unwrapKey rejects raw Uint8Array AAD',
@@ -2081,14 +2572,57 @@ async function runAllTests(): Promise<void> {
     },
   ];
 
-  console.log(`Running ${suites.length} Strongroom crypto test suites...\n`);
-  for (const suite of suites) {
-    const start = performance.now();
-    await suite.fn();
-    const elapsedMs = (performance.now() - start).toFixed(1);
-    console.log(`PASS: ${suite.name} (${elapsedMs} ms)`);
+  const cliArgs =
+    (
+      globalThis as {
+        readonly process?: { readonly argv?: ReadonlyArray<string> };
+      }
+    ).process?.argv?.slice(2) ?? [];
+  const suiteFilter = cliArgs[0]?.toLowerCase();
+  const activeSuites =
+    suiteFilter !== undefined && suiteFilter.length > 0
+      ? suites.filter((s) => s.name.toLowerCase().includes(suiteFilter))
+      : suites;
+
+  if (activeSuites.length === 0) {
+    throw new Error(`No test suites matched filter "${suiteFilter ?? ''}"`);
   }
-  console.log(`\nAll ${suites.length}/${suites.length} crypto test suites passed.`);
+
+  console.log(
+    `Running ${activeSuites.length} Strongroom crypto test suite(s)...\n`,
+  );
+  const failures: Array<{ readonly name: string; readonly error: string }> = [];
+
+  for (const suite of activeSuites) {
+    const start = performance.now();
+    try {
+      await suite.fn();
+      const elapsedMs = (performance.now() - start).toFixed(1);
+      console.log(`PASS: ${suite.name} (${elapsedMs} ms)`);
+    } catch (err: unknown) {
+      const elapsedMs = (performance.now() - start).toFixed(1);
+      const message =
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      failures.push({ name: suite.name, error: message });
+      console.error(`FAIL: ${suite.name} (${elapsedMs} ms) -> ${message}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    const summary = failures
+      .map((f, idx) => `  ${idx + 1}. [${f.name}] ${f.error}`)
+      .join('\n');
+    console.error(
+      `\n${failures.length}/${activeSuites.length} crypto test suite(s) FAILED:\n${summary}`,
+    );
+    throw new Error(
+      `${failures.length}/${activeSuites.length} crypto test suite(s) failed`,
+    );
+  }
+
+  console.log(
+    `\nAll ${activeSuites.length}/${activeSuites.length} crypto test suites passed.`,
+  );
 }
 
 await runAllTests();

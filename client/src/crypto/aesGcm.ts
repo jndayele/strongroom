@@ -1,4 +1,7 @@
-import { type AadParams, encodeAad } from './aad.ts';
+import {
+  type DataAadParams,
+  encodeAad,
+} from './aad.ts';
 import {
   AES_GCM_NONCE_BYTES,
   AES_GCM_TAG_BITS,
@@ -77,7 +80,19 @@ export function assertValidKeyUsages(
 }
 
 export function isAes256GcmKey(key: unknown): key is CryptoKey {
-  if (typeof key !== 'object' || key === null || !('algorithm' in key)) {
+  if (
+    typeof globalThis.CryptoKey === 'function' &&
+    !(key instanceof globalThis.CryptoKey)
+  ) {
+    return false;
+  }
+  if (
+    typeof key !== 'object' ||
+    key === null ||
+    !('algorithm' in key) ||
+    typeof (key as { readonly algorithm: unknown }).algorithm !== 'object' ||
+    (key as { readonly algorithm: unknown }).algorithm === null
+  ) {
     return false;
   }
   const cryptoKey = key as CryptoKey;
@@ -85,6 +100,7 @@ export function isAes256GcmKey(key: unknown): key is CryptoKey {
   return (
     cryptoKey.type === 'secret' &&
     alg !== undefined &&
+    alg !== null &&
     alg.name === 'AES-GCM' &&
     alg.length === AES_256_KEY_BITS
   );
@@ -172,6 +188,11 @@ export async function importAesGcmKey(
   }
 }
 
+const ALLOWED_DATA_PURPOSES: ReadonlySet<string> = new Set([
+  'item-meta',
+  'item-secret',
+]);
+
 /**
  * Encrypts `plaintext` with AES-256-GCM using a fresh 96-bit random nonce,
  * required structured AAD, and 256-byte bucket padding, returning a versioned
@@ -181,8 +202,15 @@ export async function importAesGcmKey(
 export async function encrypt(
   key: CryptoKey,
   plaintext: Uint8Array,
-  aad: AadParams,
+  aad: DataAadParams,
 ): Promise<Uint8Array> {
+  if (
+    !aad ||
+    typeof aad !== 'object' ||
+    !ALLOWED_DATA_PURPOSES.has(aad.purpose)
+  ) {
+    throw new CryptoArgumentError();
+  }
   if (!isAes256GcmDataKey(key, 'encrypt') || !(plaintext instanceof Uint8Array)) {
     throw new CryptoArgumentError();
   }
@@ -240,8 +268,16 @@ export async function encrypt(
 export async function decrypt(
   key: CryptoKey,
   envelope: Uint8Array,
-  aad: AadParams,
+  aad: DataAadParams,
 ): Promise<Uint8Array> {
+  if (
+    !aad ||
+    typeof aad !== 'object' ||
+    !ALLOWED_DATA_PURPOSES.has(aad.purpose)
+  ) {
+    throw new CryptoArgumentError();
+  }
+
   let aadBytes: Uint8Array | undefined;
   let decoded: DecodedEnvelope | undefined;
   let nonceBuffer: ArrayBuffer | undefined;

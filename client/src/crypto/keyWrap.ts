@@ -1,4 +1,10 @@
-import { type AadParams, encodeAad } from './aad.ts';
+import {
+  type KeyWrapAadParams,
+  type VaultKeyMasterAadParams,
+  type VaultKeyWrapAadParams,
+  encodeAad,
+  toBoundedNonEmptyBytes,
+} from './aad.ts';
 import {
   AES_256_KEY_BITS,
   AES_256_KEY_BYTES,
@@ -17,7 +23,12 @@ import {
   encodeEnvelope,
 } from './envelope.ts';
 import { CryptoArgumentError, DecryptionError } from './errors.ts';
-import { getWebCrypto, toArrayBuffer, wipeBuffers } from './memory.ts';
+import {
+  constantTimeEqual,
+  getWebCrypto,
+  toArrayBuffer,
+  wipeBuffers,
+} from './memory.ts';
 import { secureRandom } from './random.ts';
 
 /**
@@ -33,6 +44,19 @@ const VAULT_KEY_PURPOSES: ReadonlySet<string> = new Set([
   'vault-key-km',
   'vault-key-ks-master',
   'vault-key-ks-prf',
+]);
+
+const CREATE_VAULT_KEY_PURPOSES: ReadonlySet<string> = new Set([
+  'vault-key-km',
+  'vault-key-ks-master',
+]);
+
+const ALLOWED_WRAP_PURPOSES: ReadonlySet<string> = new Set([
+  'vault-key-km',
+  'vault-key-ks-master',
+  'vault-key-ks-prf',
+  'item-key-m',
+  'item-key-s',
 ]);
 
 /**
@@ -52,9 +76,16 @@ const VAULT_KEY_PURPOSES: ReadonlySet<string> = new Set([
  */
 export async function createAndWrapVaultKey(
   wrappingKey: CryptoKey,
-  aad: AadParams,
+  aad: VaultKeyMasterAadParams,
   usages: ReadonlyArray<KeyUsage> = ['wrapKey', 'unwrapKey'],
 ): Promise<{ readonly key: CryptoKey; readonly wrappedKey: Uint8Array }> {
+  if (
+    !aad ||
+    typeof aad !== 'object' ||
+    !CREATE_VAULT_KEY_PURPOSES.has(aad.purpose)
+  ) {
+    throw new CryptoArgumentError();
+  }
   if (!isAes256GcmWrappingKey(wrappingKey, 'wrapKey')) {
     throw new CryptoArgumentError();
   }
@@ -83,8 +114,15 @@ export async function createAndWrapVaultKey(
 export async function wrapKey(
   wrappingKey: CryptoKey,
   keyToWrap: Uint8Array,
-  aad: AadParams,
+  aad: KeyWrapAadParams,
 ): Promise<Uint8Array> {
+  if (
+    !aad ||
+    typeof aad !== 'object' ||
+    !ALLOWED_WRAP_PURPOSES.has(aad.purpose)
+  ) {
+    throw new CryptoArgumentError();
+  }
   if (
     !isAes256GcmWrappingKey(wrappingKey, 'wrapKey') ||
     !(keyToWrap instanceof Uint8Array) ||
@@ -152,9 +190,16 @@ export async function wrapKey(
 export async function unwrapKey(
   wrappingKey: CryptoKey,
   wrappedEnvelope: Uint8Array,
-  aad: AadParams,
+  aad: KeyWrapAadParams,
   usages?: ReadonlyArray<KeyUsage>,
 ): Promise<CryptoKey> {
+  if (
+    !aad ||
+    typeof aad !== 'object' ||
+    !ALLOWED_WRAP_PURPOSES.has(aad.purpose)
+  ) {
+    throw new CryptoArgumentError();
+  }
   if (usages !== undefined) {
     assertValidKeyUsages(usages);
   }
@@ -241,9 +286,9 @@ export async function unwrapKey(
 export async function rewrapKey(
   oldWrappingKey: CryptoKey,
   oldEnvelope: Uint8Array,
-  oldAad: AadParams,
+  oldAad: VaultKeyWrapAadParams,
   newWrappingKey: CryptoKey,
-  newAad: AadParams,
+  newAad: VaultKeyWrapAadParams,
 ): Promise<Uint8Array> {
   let oldAadBytes: Uint8Array | undefined;
   let newAadBytes: Uint8Array | undefined;
@@ -266,15 +311,45 @@ export async function rewrapKey(
       throw new DecryptionError();
     }
 
-    oldAadBytes = encodeAad(oldAad);
-    newAadBytes = encodeAad(newAad);
-
     if (
+      !oldAad ||
+      !newAad ||
+      typeof oldAad !== 'object' ||
+      typeof newAad !== 'object' ||
       !VAULT_KEY_PURPOSES.has(oldAad.purpose) ||
       !VAULT_KEY_PURPOSES.has(newAad.purpose)
     ) {
       throw new DecryptionError();
     }
+
+    // Cross-slot checks: K_m only to K_m; K_s master or PRF only to K_s master or PRF
+    if (oldAad.purpose === 'vault-key-km') {
+      if (newAad.purpose !== 'vault-key-km') {
+        throw new DecryptionError();
+      }
+    } else {
+      if (
+        newAad.purpose !== 'vault-key-ks-master' &&
+        newAad.purpose !== 'vault-key-ks-prf'
+      ) {
+        throw new DecryptionError();
+      }
+    }
+
+    // require the same userId (compare the encoded bytes)
+    const oldUserBytes = toBoundedNonEmptyBytes(oldAad.userId);
+    const newUserBytes = toBoundedNonEmptyBytes(newAad.userId);
+    if (!constantTimeEqual(oldUserBytes, newUserBytes)) {
+      throw new DecryptionError();
+    }
+
+    // newAad.keyVersion greater than or equal to oldAad.keyVersion
+    if (newAad.keyVersion < oldAad.keyVersion) {
+      throw new DecryptionError();
+    }
+
+    oldAadBytes = encodeAad(oldAad);
+    newAadBytes = encodeAad(newAad);
 
     oldDecoded = decodeEnvelope(oldEnvelope);
     if (
