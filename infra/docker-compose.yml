@@ -1,0 +1,28 @@
+# Local PostgreSQL instance for development and testing ONLY.
+# Binds strictly to 127.0.0.1 so it is never exposed on external network interfaces.
+# On first start, /docker-entrypoint-initdb.d/01-init-roles.sh creates `vault_migrator`
+# (schema owner) and `vault_app` (least-privilege application role).
+
+services:
+  postgres:
+    image: postgres:17.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:-local_postgres_superuser_only}
+      POSTGRES_DB: ${POSTGRES_DB:-vault_dev}
+      VAULT_MIGRATOR_PASSWORD: ${VAULT_MIGRATOR_PASSWORD:-local_migrator_password_only}
+      VAULT_APP_PASSWORD: ${VAULT_APP_PASSWORD:-local_app_password_only}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_local_data:/var/lib/postgresql/data
+      - ./init-roles.sh:/docker-entrypoint-initdb.d/01-init-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-vault_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_local_data:

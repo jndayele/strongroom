@@ -1,37 +1,20 @@
-# Environment files (never commit real secrets; only .env.example is tracked)
+# Environment secrets
 .env
 .env.*
 !.env.example
 
-# Cryptographic keys, certificates, and Emergency Kits
-*.pem
-*.key
-*.p12
-*.pfx
-*.crt
-*.csr
-*.der
-*.jwk
-*.asc
-*.gpg
-*emergency-kit*.pdf
-
-# Frontend build output & dependencies
-client/node_modules/
-client/dist/
-client/.vite/
-*.tsbuildinfo
-
-# Backend Rust build output
-backend/target/
+# Rust / Cargo
+target/
 **/*.rs.bk
 
-# OS, editor, and test artifacts
+# Node / Frontend
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# OS / Editor
 .DS_Store
 Thumbs.db
-*.log
-npm-debug.log*
-coverage/
+.vscode/
 .idea/
-.vscode/*
-!.vscode/extensions.json

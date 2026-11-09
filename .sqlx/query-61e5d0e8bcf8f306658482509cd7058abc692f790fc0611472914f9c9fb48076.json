@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO items (\n            user_id,\n            meta_blob,\n            secret_blob,\n            wrapped_item_key_m,\n            wrapped_item_key_s,\n            version,\n            padded_size\n        )\n        VALUES ($1::text::uuid, $2, $3, $4, $5, $6, $7)\n        RETURNING\n            id::text AS \"id!\",\n            user_id::text AS \"user_id!\",\n            meta_blob,\n            secret_blob,\n            wrapped_item_key_m,\n            wrapped_item_key_s,\n            version,\n            padded_size,\n            to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"created_at!\",\n            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"updated_at!\",\n            to_char(deleted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"deleted_at\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "meta_blob",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "secret_blob",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "wrapped_item_key_m",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "wrapped_item_key_s",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 6,
+        "name": "version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "padded_size",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "deleted_at",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "61e5d0e8bcf8f306658482509cd7058abc692f790fc0611472914f9c9fb48076"
+}
