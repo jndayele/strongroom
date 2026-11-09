@@ -22,34 +22,17 @@ fn migrator_database_url() -> String {
     })
 }
 
-async fn setup_pools() -> Result<(sqlx::PgPool, sqlx::PgPool), Box<dyn Error>> {
-    let migrator_pool = connect_pool(&migrator_database_url()).await?;
+async fn setup_pools() -> Result<sqlx::PgPool, Box<dyn Error>> {
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_migrate"))
+        .env("MIGRATOR_DATABASE_URL", migrator_database_url())
+        .status()?;
 
-    let mut conn = migrator_pool.acquire().await?;
-    sqlx::query("SELECT pg_advisory_lock(9807)")
-        .execute(&mut *conn)
-        .await?;
-
-    let schema_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'users')",
-    )
-    .fetch_one(&mut *conn)
-    .await?;
-
-    if !schema_exists {
-        let migration_1 = include_str!("../migrations/0001_initial_schema.sql");
-        let migration_2 = include_str!("../migrations/0002_role_permissions.sql");
-        sqlx::raw_sql(migration_1).execute(&mut *conn).await?;
-        sqlx::raw_sql(migration_2).execute(&mut *conn).await?;
+    if !status.success() {
+        return Err(format!("migrate binary failed with status: {status}").into());
     }
 
-    sqlx::query("SELECT pg_advisory_unlock(9807)")
-        .execute(&mut *conn)
-        .await?;
-    drop(conn);
-
     let app_pool = connect_pool(&app_database_url()).await?;
-    Ok((migrator_pool, app_pool))
+    Ok(app_pool)
 }
 
 fn unique_email_hash(tag: u8) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -91,7 +74,7 @@ fn sample_new_item(user_id: &str, marker: u8) -> NewItem {
 
 #[tokio::test]
 async fn cross_user_item_access_is_impossible() -> Result<(), Box<dyn Error>> {
-    let (_migrator_pool, app_pool) = setup_pools().await?;
+    let app_pool = setup_pools().await?;
 
     let hash_a = unique_email_hash(0xA1)?;
     let hash_b = unique_email_hash(0xB2)?;
@@ -149,7 +132,7 @@ async fn cross_user_item_access_is_impossible() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn vault_app_role_cannot_execute_ddl() -> Result<(), Box<dyn Error>> {
-    let (_migrator_pool, app_pool) = setup_pools().await?;
+    let app_pool = setup_pools().await?;
 
     // 1. CREATE TABLE must fail for vault_app.
     let create_res = sqlx::query("CREATE TABLE unauthorized_test_table (id UUID PRIMARY KEY)")
@@ -176,12 +159,21 @@ async fn vault_app_role_cannot_execute_ddl() -> Result<(), Box<dyn Error>> {
         "expected vault_app DROP TABLE to be rejected by PostgreSQL permissions"
     );
 
+    // 4. The migrate binary must refuse to run under the vault_app role.
+    let migrate_as_app = std::process::Command::new(env!("CARGO_BIN_EXE_migrate"))
+        .env("MIGRATOR_DATABASE_URL", app_database_url())
+        .output()?;
+    assert!(
+        !migrate_as_app.status.success(),
+        "expected migrate binary to refuse running as vault_app"
+    );
+
     Ok(())
 }
 
 #[tokio::test]
 async fn vault_app_role_cannot_update_or_delete_audit_events() -> Result<(), Box<dyn Error>> {
-    let (_migrator_pool, app_pool) = setup_pools().await?;
+    let app_pool = setup_pools().await?;
 
     let user = create_user(&app_pool, &sample_new_user(unique_email_hash(0xC3)?)).await?;
     let ip_hash: Vec<u8> = vec![0x5A; 32];
@@ -245,7 +237,7 @@ async fn vault_app_role_cannot_update_or_delete_audit_events() -> Result<(), Box
 
 #[tokio::test]
 async fn database_stores_only_opaque_bytes_and_no_plaintext() -> Result<(), Box<dyn Error>> {
-    let (_migrator_pool, app_pool) = setup_pools().await?;
+    let app_pool = setup_pools().await?;
 
     // Simulated plaintext values that exist ONLY in the browser before encryption/hashing.
     // None of these strings (or their hex encodings) are ever passed to the server or DB.
@@ -350,7 +342,9 @@ async fn database_stores_only_opaque_bytes_and_no_plaintext() -> Result<(), Box<
         }
 
         let dump_sql = format!("SELECT {} FROM {table}", projections.join(", "));
-        let data_rows = sqlx::query(&dump_sql).fetch_all(&app_pool).await?;
+        let data_rows = sqlx::query(sqlx::AssertSqlSafe(dump_sql))
+            .fetch_all(&app_pool)
+            .await?;
 
         for row in data_rows {
             for idx in 0..col_rows.len() {

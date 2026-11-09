@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   rust:
-    name: Rust (fmt, clippy, sqlx prepare --check, test, deny, audit)
+    name: Rust (fmt, clippy, migrate, test, deny, audit)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -34,13 +34,13 @@ jobs:
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
-          toolchain: 1.86.0
+          toolchain: 1.99.1
           components: rustfmt, clippy
 
-      - name: Install cargo-deny, cargo-audit, and sqlx-cli
+      - name: Install cargo-deny and cargo-audit
         uses: taiki-e/install-action@955a6ff1416eae278c9f833008a9beb4b7f9afe3 # v2.49.15
         with:
-          tool: cargo-deny,cargo-audit,sqlx-cli@0.8.3
+          tool: cargo-deny,cargo-audit
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -50,31 +50,26 @@ jobs:
           SQLX_OFFLINE: "true"
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Initialize PostgreSQL roles and run migrations
+      - name: Initialize PostgreSQL roles via infra/init-roles.sh
         env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
           PGPASSWORD: ci_postgres_superuser_password
           POSTGRES_USER: postgres
           POSTGRES_DB: vault_dev
           VAULT_MIGRATOR_PASSWORD: local_migrator_password_only
           VAULT_APP_PASSWORD: local_app_password_only
-          MIGRATOR_DATABASE_URL: postgres://vault_migrator:local_migrator_password_only@127.0.0.1:5432/vault_dev
-        run: |
-          psql -h 127.0.0.1 -v ON_ERROR_STOP=1 \
-            --username "$POSTGRES_USER" \
-            --dbname "$POSTGRES_DB" \
-            -v db_name="$POSTGRES_DB" \
-            -v migrator_password="$VAULT_MIGRATOR_PASSWORD" \
-            -v app_password="$VAULT_APP_PASSWORD" \
-            < <(sed -n '/<<'"'"'EOSQL'"'"'/,/^EOSQL$/{ /<<'"'"'EOSQL'"'"'/d; /^EOSQL$/d; p; }' infra/init-roles.sh)
-          cargo sqlx migrate run --source apps/api/migrations --database-url "$MIGRATOR_DATABASE_URL"
+        run: sh infra/init-roles.sh
 
-      - name: Verify .sqlx offline query metadata is up to date
+      - name: Run database migrations via migrate binary
         env:
-          DATABASE_URL: postgres://vault_app:local_app_password_only@127.0.0.1:5432/vault_dev
-        run: cargo sqlx prepare --check --workspace -- --all-targets
+          SQLX_OFFLINE: "true"
+          MIGRATOR_DATABASE_URL: postgres://vault_migrator:local_migrator_password_only@127.0.0.1:5432/vault_dev
+        run: cargo run -p strongroom-api --bin migrate
 
       - name: Run tests
         env:
+          SQLX_OFFLINE: "true"
           DATABASE_URL: postgres://vault_app:local_app_password_only@127.0.0.1:5432/vault_dev
           MIGRATOR_DATABASE_URL: postgres://vault_migrator:local_migrator_password_only@127.0.0.1:5432/vault_dev
         run: cargo test --workspace
@@ -86,11 +81,8 @@ jobs:
         run: cargo audit
 
   web:
-    name: Web (npm ci, tsc, eslint, vitest, audit)
+    name: Web & Crypto (npm ci, tsc, eslint, vitest, audit)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -100,19 +92,19 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies (ignore scripts)
         run: npm ci --ignore-scripts
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Lint
-        run: npx eslint .
+        run: npm run lint
 
       - name: Run tests
-        run: npx vitest run
+        run: npm test
 
       - name: Audit dependencies
         run: npm audit
