@@ -6,57 +6,98 @@
       {
         "ordinal": 0,
         "name": "id!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 1,
         "name": "user_id!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 2,
         "name": "meta_blob",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "meta_blob"
+          }
+        }
       },
       {
         "ordinal": 3,
         "name": "secret_blob",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "secret_blob"
+          }
+        }
       },
       {
         "ordinal": 4,
         "name": "wrapped_item_key_m",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "wrapped_item_key_m"
+          }
+        }
       },
       {
         "ordinal": 5,
         "name": "wrapped_item_key_s",
-        "type_info": "Bytea"
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "wrapped_item_key_s"
+          }
+        }
       },
       {
         "ordinal": 6,
         "name": "version",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "version"
+          }
+        }
       },
       {
         "ordinal": 7,
         "name": "padded_size",
-        "type_info": "Int4"
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "items",
+            "name": "padded_size"
+          }
+        }
       },
       {
         "ordinal": 8,
         "name": "created_at!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 9,
         "name": "updated_at!",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
         "ordinal": 10,
         "name": "deleted_at",
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {

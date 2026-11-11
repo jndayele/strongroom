@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
-use sqlx::postgres::PgPoolOptions;
-use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{ConnectOptions, PgPool};
+use std::str::FromStr;
 use std::time::Duration;
 
 /// Maximum number of concurrent connections in the application database pool.
@@ -21,10 +22,11 @@ pub const POOL_MAX_LIFETIME: Duration = Duration::from_secs(1800);
 
 /// Input payload for creating a new user record.
 /// All byte fields must already be client-side ciphertext, wrapped keys, or hashes.
+/// `email_enc` is `None` at initial OPAQUE signup and populated later during email verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewUser {
     pub email_hash: Vec<u8>,
-    pub email_enc: Vec<u8>,
+    pub email_enc: Option<Vec<u8>>,
     pub opaque_record: Vec<u8>,
     pub wrapped_km: Vec<u8>,
     pub wrapped_ks_master: Vec<u8>,
@@ -37,7 +39,7 @@ pub struct NewUser {
 pub struct UserRecord {
     pub id: String,
     pub email_hash: Vec<u8>,
-    pub email_enc: Vec<u8>,
+    pub email_enc: Option<Vec<u8>>,
     pub opaque_record: Vec<u8>,
     pub wrapped_km: Vec<u8>,
     pub wrapped_ks_master: Vec<u8>,
@@ -75,16 +77,20 @@ pub struct ItemRecord {
     pub deleted_at: Option<String>,
 }
 
-/// Creates a PostgreSQL connection pool configured with connection limits and timeouts.
+/// Creates a PostgreSQL connection pool configured with connection limits, timeouts, and
+/// SQLx statement logging disabled (`log_statements` / `log_slow_statements` set to `Off`)
+/// so per-query row counts (`rows_returned`) never leak account existence into logs.
 /// In normal operation, `database_url` connects as the least-privilege `vault_app` role.
 pub async fn connect_pool(database_url: &str) -> Result<PgPool, sqlx::Error> {
+    let connect_options = PgConnectOptions::from_str(database_url)?.disable_statement_logging();
+
     PgPoolOptions::new()
         .max_connections(POOL_MAX_CONNECTIONS)
         .min_connections(POOL_MIN_CONNECTIONS)
         .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
         .idle_timeout(POOL_IDLE_TIMEOUT)
         .max_lifetime(POOL_MAX_LIFETIME)
-        .connect(database_url)
+        .connect_with(connect_options)
         .await
 }
 
@@ -115,7 +121,7 @@ pub async fn create_user(pool: &PgPool, input: &NewUser) -> Result<UserRecord, s
             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "created_at!"
         "#,
         &input.email_hash,
-        &input.email_enc,
+        input.email_enc.as_deref(),
         &input.opaque_record,
         &input.wrapped_km,
         &input.wrapped_ks_master,
@@ -124,6 +130,42 @@ pub async fn create_user(pool: &PgPool, input: &NewUser) -> Result<UserRecord, s
     )
     .fetch_one(pool)
     .await
+}
+
+/// Inserts a new user record if `email_hash` does not already exist.
+///
+/// Uses `ON CONFLICT (email_hash) DO NOTHING` so an existing account is never overwritten or
+/// modified, and both new and duplicate signups execute the exact same database path.
+pub async fn create_user_on_conflict_do_nothing(
+    pool: &PgPool,
+    input: &NewUser,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO users (
+            email_hash,
+            email_enc,
+            opaque_record,
+            wrapped_km,
+            wrapped_ks_master,
+            kdf_params,
+            key_version
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (email_hash) DO NOTHING
+        "#,
+        &input.email_hash,
+        input.email_enc.as_deref(),
+        &input.opaque_record,
+        &input.wrapped_km,
+        &input.wrapped_ks_master,
+        &input.kdf_params,
+        input.key_version,
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 /// Looks up a user by `email_hash`. Returns `Ok(None)` if no matching user exists.

@@ -51,7 +51,7 @@ fn unique_email_hash(tag: u8) -> Result<Vec<u8>, Box<dyn Error>> {
 fn sample_new_user(email_hash: Vec<u8>) -> NewUser {
     NewUser {
         email_hash,
-        email_enc: vec![0xAA, 0xBB, 0xCC, 0xDD, 0x01, 0x02],
+        email_enc: Some(vec![0xAA, 0xBB, 0xCC, 0xDD, 0x01, 0x02]),
         opaque_record: vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
         wrapped_km: vec![0x71, 0x72, 0x73, 0x74, 0x75, 0x76],
         wrapped_ks_master: vec![0x81, 0x82, 0x83, 0x84, 0x85, 0x86],
@@ -264,7 +264,7 @@ async fn database_stores_only_opaque_bytes_and_no_plaintext() -> Result<(), Box<
         &app_pool,
         &NewUser {
             email_hash: opaque_email_hash.clone(),
-            email_enc: opaque_email_enc.clone(),
+            email_enc: Some(opaque_email_enc.clone()),
             opaque_record: opaque_record.clone(),
             wrapped_km: opaque_wrapped_km.clone(),
             wrapped_ks_master: opaque_wrapped_ks.clone(),
@@ -295,7 +295,7 @@ async fn database_stores_only_opaque_bytes_and_no_plaintext() -> Result<(), Box<
 
     // Verify stored bytes match the exact opaque slices supplied.
     assert_eq!(user.email_hash, opaque_email_hash);
-    assert_eq!(user.email_enc, opaque_email_enc);
+    assert_eq!(user.email_enc, Some(opaque_email_enc));
     assert_eq!(user.opaque_record, opaque_record);
     assert_eq!(user.wrapped_km, opaque_wrapped_km);
     assert_eq!(user.wrapped_ks_master, opaque_wrapped_ks);

@@ -2,8 +2,11 @@
 
 use std::env;
 use std::error::Error;
-use strongroom_api::build_router;
+use std::sync::Arc;
+use strongroom_api::auth::handlers::AppState;
+use strongroom_api::build_router_with_state;
 use strongroom_api::config::AppConfig;
+use strongroom_api::db::connect_pool;
 use tokio::net::TcpListener;
 use tracing::Level;
 
@@ -31,11 +34,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let config = AppConfig::from_env()?;
     let addr = config.socket_addr();
+    let pool = connect_pool(&config.database_url).await?;
+    let state = Arc::new(AppState::new(
+        pool,
+        config.opaque_server_setup,
+        config.credential_id_key,
+        config.email_hash_key,
+    ));
 
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(address = %addr, "starting strongroom-api server");
 
-    let app = build_router();
+    let app = build_router_with_state(state);
     axum::serve(listener, app).await?;
 
     Ok(())

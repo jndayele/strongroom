@@ -1,0 +1,17 @@
+# Advisory exceptions for cargo-audit (must match deny.toml with documented justification and review-by date).
+[advisories]
+ignore = [
+    # Reason: crypto-bigint 0.5.5 is pulled transitively by elliptic-curve 0.13.8 (via opaque-ke 4.0.1 and voprf 0.5.0).
+    # Patched version is >= 0.7.6, which is semver-incompatible with elliptic-curve 0.13.8 (requires ^0.5).
+    # Safe because our cipher suite uses Ristretto255 (curve25519-dalek fixed-size 64-bit limbs via fiat-crypto)
+    # and never invokes crypto-bigint arithmetic, UintRef equality, or BoxedMontyForm::invert.
+    # Review-by: 2026-12-10
+    "RUSTSEC-2026-0387",
+
+    # Reason: libsqlite3-sys 0.37.0 is present in Cargo.lock only because Cargo resolves all optional dependencies of
+    # sqlx 0.9.0 (sqlx -> optional sqlx-sqlite 0.9.0 -> libsqlite3-sys >=0.30.1, <0.38.0).
+    # Safe because the sqlite feature is disabled; libsqlite3-sys is completely absent from the build graph
+    # (`cargo tree -i libsqlite3-sys -e all --target all` is empty) and is never compiled or linked.
+    # Review-by: 2026-12-10
+    "RUSTSEC-2026-0459",
+]

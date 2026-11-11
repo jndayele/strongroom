@@ -1,6 +1,14 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # Reason: crypto-bigint 0.5.5 is pulled transitively by elliptic-curve 0.13.8 (via opaque-ke 4.0.1 and voprf 0.5.0).
+    # Patched version is >= 0.7.6, which is semver-incompatible with elliptic-curve 0.13.8 (requires ^0.5).
+    # Safe because our cipher suite uses Ristretto255 (curve25519-dalek fixed-size 64-bit limbs via fiat-crypto)
+    # and never invokes crypto-bigint arithmetic, UintRef equality, or BoxedMontyForm::invert.
+    # Review-by: 2026-12-10
+    { id = "RUSTSEC-2026-0387", reason = "Transitive via elliptic-curve 0.13.8 in opaque-ke 4.0.1 (requires crypto-bigint ^0.5; patched in >=0.7.6). Unreachable with Ristretto255 (curve25519-dalek). Review-by: 2026-12-10" },
+]
 
 [licenses]
 version = 2

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   rust:
-    name: Rust (fmt, clippy, migrate, test, deny, audit)
+    name: Rust (fmt, clippy, migrate, sqlx check, test, deny, audit)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -67,9 +67,17 @@ jobs:
           MIGRATOR_DATABASE_URL: postgres://vault_migrator:local_migrator_password_only@127.0.0.1:5432/vault_dev
         run: cargo run -p strongroom-api --bin migrate
 
+      - name: Verify .sqlx offline query metadata matches live database
+        env:
+          DATABASE_URL: postgres://vault_app:local_app_password_only@127.0.0.1:5432/vault_dev
+        run: |
+          rm -rf /tmp/sqlx-check && mkdir -p /tmp/sqlx-check
+          cargo clean -p strongroom-api
+          SQLX_OFFLINE_DIR=/tmp/sqlx-check cargo check --workspace --all-targets
+          diff -ruN .sqlx /tmp/sqlx-check
+
       - name: Run tests
         env:
-          SQLX_OFFLINE: "true"
           DATABASE_URL: postgres://vault_app:local_app_password_only@127.0.0.1:5432/vault_dev
           MIGRATOR_DATABASE_URL: postgres://vault_migrator:local_migrator_password_only@127.0.0.1:5432/vault_dev
         run: cargo test --workspace
