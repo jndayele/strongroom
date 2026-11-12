@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE sessions\n            SET idle_expires_at = now() + interval '24 hours'\n            WHERE id = $1::text::uuid\n              AND user_id = $2::text::uuid\n              AND stage = 2\n              AND revoked_at IS NULL\n              AND used_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b23198c6f50879e8e90aa205785671f3eadb2da84851144c8d2452724cb519d2"
+}

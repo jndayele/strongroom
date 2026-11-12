@@ -61,6 +61,22 @@ impl OpaqueServerSetup {
         out.copy_from_slice(&serialized);
         out
     }
+
+    /// Returns the 32-byte static public key from `ServerSetup`.
+    pub fn static_public_key_bytes(&self) -> [u8; 32] {
+        let serialized = self.inner.keypair().public().serialize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&serialized);
+        out
+    }
+
+    /// Parses `OPAQUE_SERVER_SETUP` from a base64url environment variable string.
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let mut bytes = decode_required_secret(&|key| env::var(key).ok(), "OPAQUE_SERVER_SETUP")?;
+        let result = Self::from_bytes(&bytes);
+        bytes.fill(0);
+        result
+    }
 }
 
 impl PartialEq for OpaqueServerSetup {
@@ -162,6 +178,8 @@ pub struct AppConfig {
     pub host: IpAddr,
     pub port: u16,
     pub database_url: String,
+    pub app_origin: String,
+    pub dev_insecure_cookies: bool,
     pub opaque_server_setup: OpaqueServerSetup,
     pub credential_id_key: CredentialIdKey,
     pub email_hash_key: EmailHashKey,
@@ -173,6 +191,8 @@ impl fmt::Debug for AppConfig {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("database_url", &"[redacted]")
+            .field("app_origin", &self.app_origin)
+            .field("dev_insecure_cookies", &self.dev_insecure_cookies)
             .field("opaque_server_setup", &self.opaque_server_setup)
             .field("credential_id_key", &self.credential_id_key)
             .field("email_hash_key", &self.email_hash_key)
@@ -185,6 +205,9 @@ pub enum ConfigError {
     MissingVar(&'static str),
     InvalidHost(String),
     InvalidPort(String),
+    InvalidAppOrigin(String),
+    InvalidBool(&'static str),
+    InsecureCookiesNonLocalOrigin,
     InvalidSecretEncoding(&'static str),
     InvalidSecretLength {
         name: &'static str,
@@ -200,6 +223,15 @@ impl fmt::Display for ConfigError {
             Self::MissingVar(name) => write!(f, "missing required environment variable: {name}"),
             Self::InvalidHost(val) => write!(f, "invalid API_HOST value: {val}"),
             Self::InvalidPort(val) => write!(f, "invalid API_PORT value: {val}"),
+            Self::InvalidAppOrigin(val) => write!(
+                f,
+                "invalid APP_ORIGIN value (expected single http/https origin without path or wildcard): {val}"
+            ),
+            Self::InvalidBool(name) => write!(f, "invalid boolean value for {name}"),
+            Self::InsecureCookiesNonLocalOrigin => write!(
+                f,
+                "DEV_INSECURE_COOKIES=true is only allowed when APP_ORIGIN is http://localhost or http://127.0.0.1"
+            ),
             Self::InvalidSecretEncoding(name) => {
                 write!(
                     f,
@@ -227,6 +259,68 @@ impl fmt::Display for ConfigError {
 }
 
 impl Error for ConfigError {}
+
+fn validate_app_origin(raw: &str) -> Result<String, ConfigError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::MissingVar("APP_ORIGIN"));
+    }
+
+    let authority = if let Some(rest) = trimmed.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("http://") {
+        rest
+    } else {
+        return Err(ConfigError::InvalidAppOrigin(trimmed.to_string()));
+    };
+
+    if authority.is_empty()
+        || !authority.is_ascii()
+        || authority.bytes().any(|b| {
+            b <= 0x20 || b == 0x7F || matches!(b, b'/' | b'?' | b'#' | b'@' | b'*' | b'\\' | b',')
+        })
+    {
+        return Err(ConfigError::InvalidAppOrigin(trimmed.to_string()));
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn is_local_http_origin(origin: &str) -> bool {
+    let Some(authority) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = match authority.split_once(':') {
+        Some((h, port)) => {
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            h
+        }
+        None => authority,
+    };
+    host == "localhost" || host == "127.0.0.1"
+}
+
+fn parse_optional_bool<F>(lookup: &F, name: &'static str) -> Result<bool, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(raw) = lookup(name) else {
+        return Ok(false);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    if trimmed.eq_ignore_ascii_case("true") || trimmed == "1" {
+        return Ok(true);
+    }
+    if trimmed.eq_ignore_ascii_case("false") || trimmed == "0" {
+        return Ok(false);
+    }
+    Err(ConfigError::InvalidBool(name))
+}
 
 fn decode_required_secret<F>(lookup: &F, name: &'static str) -> Result<Vec<u8>, ConfigError>
 where
@@ -267,6 +361,14 @@ impl AppConfig {
             return Err(ConfigError::MissingVar("DATABASE_URL"));
         }
 
+        let app_origin_raw = lookup("APP_ORIGIN").ok_or(ConfigError::MissingVar("APP_ORIGIN"))?;
+        let app_origin = validate_app_origin(&app_origin_raw)?;
+
+        let dev_insecure_cookies = parse_optional_bool(&lookup, "DEV_INSECURE_COOKIES")?;
+        if dev_insecure_cookies && !is_local_http_origin(&app_origin) {
+            return Err(ConfigError::InsecureCookiesNonLocalOrigin);
+        }
+
         let setup_bytes = decode_required_secret(&lookup, "OPAQUE_SERVER_SETUP")?;
         let opaque_server_setup = OpaqueServerSetup::from_bytes(&setup_bytes)?;
 
@@ -280,6 +382,8 @@ impl AppConfig {
             host,
             port,
             database_url,
+            app_origin,
+            dev_insecure_cookies,
             opaque_server_setup,
             credential_id_key,
             email_hash_key,
@@ -305,6 +409,7 @@ mod tests {
             "API_HOST" => Some(String::from("127.0.0.1")),
             "API_PORT" => Some(String::from("8080")),
             "DATABASE_URL" => Some(String::from("postgres://user:pass@127.0.0.1:5432/db")),
+            "APP_ORIGIN" => Some(String::from("https://app.strongroom.example")),
             "OPAQUE_SERVER_SETUP" => Some(setup_b64),
             "CREDENTIAL_ID_KEY" => Some(cred_b64),
             "EMAIL_HASH_KEY" => Some(email_b64),
@@ -316,6 +421,8 @@ mod tests {
     fn valid_config_loads_and_redacts_secrets_in_debug() -> Result<(), ConfigError> {
         let cfg = AppConfig::from_lookup(valid_env_lookup)?;
         assert_eq!(cfg.port, 8080);
+        assert_eq!(cfg.app_origin, "https://app.strongroom.example");
+        assert!(!cfg.dev_insecure_cookies);
 
         let debug_str = format!("{cfg:?}");
         assert!(debug_str.contains("[redacted]"));
@@ -330,6 +437,7 @@ mod tests {
     fn missing_or_wrong_length_secrets_fail_fast() {
         for required in [
             "DATABASE_URL",
+            "APP_ORIGIN",
             "OPAQUE_SERVER_SETUP",
             "CREDENTIAL_ID_KEY",
             "EMAIL_HASH_KEY",
@@ -343,6 +451,49 @@ mod tests {
             });
             assert_eq!(res, Err(ConfigError::MissingVar(required)));
         }
+
+        // Invalid APP_ORIGIN values (wildcard, trailing slash, missing scheme)
+        for bad_origin in [
+            "*",
+            "https://app.example.com/",
+            "https://app.example.com/path",
+            "app.example.com",
+            "ftp://app.example.com",
+            "https://app.example.com,https://other.com",
+        ] {
+            let res_bad_origin = AppConfig::from_lookup(|k| {
+                if k == "APP_ORIGIN" {
+                    Some(String::from(bad_origin))
+                } else {
+                    valid_env_lookup(k)
+                }
+            });
+            assert_eq!(
+                res_bad_origin,
+                Err(ConfigError::InvalidAppOrigin(String::from(bad_origin)))
+            );
+        }
+
+        // DEV_INSECURE_COOKIES=true must be rejected when APP_ORIGIN is non-local / HTTPS
+        let res_insecure_https = AppConfig::from_lookup(|k| {
+            if k == "DEV_INSECURE_COOKIES" {
+                Some(String::from("true"))
+            } else {
+                valid_env_lookup(k)
+            }
+        });
+        assert_eq!(
+            res_insecure_https,
+            Err(ConfigError::InsecureCookiesNonLocalOrigin)
+        );
+
+        // DEV_INSECURE_COOKIES=true is allowed with http://localhost:5173
+        let res_insecure_local = AppConfig::from_lookup(|k| match k {
+            "APP_ORIGIN" => Some(String::from("http://localhost:5173")),
+            "DEV_INSECURE_COOKIES" => Some(String::from("true")),
+            _ => valid_env_lookup(k),
+        });
+        assert!(res_insecure_local.is_ok());
 
         // Wrong byte length for OPAQUE_SERVER_SETUP (32 bytes instead of 128)
         let short_setup = URL_SAFE_NO_PAD.encode([0x11u8; 32]);

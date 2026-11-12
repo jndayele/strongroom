@@ -1,0 +1,130 @@
+{
+  "description": "Shared email canonicalization test vectors for @strongroom/auth-client (TS) and strongroom-api (Rust).",
+  "cases": [
+    {
+      "input": "alice@example.com",
+      "expected": "alice@example.com",
+      "error": null
+    },
+    {
+      "input": "  Alice.Smith@Example.COM\n",
+      "expected": "alice.smith@example.com",
+      "error": null
+    },
+    {
+      "input": "\t\r\n  User+Tag@Sub.Example.COM \t\r\n",
+      "expected": "user+tag@sub.example.com",
+      "error": null
+    },
+    {
+      "input": "a@b.co",
+      "expected": "a@b.co",
+      "error": null
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "error": null
+    },
+    {
+      "input": "",
+      "expected": null,
+      "error": "Empty"
+    },
+    {
+      "input": "   \t\r\n  ",
+      "expected": null,
+      "error": "Empty"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "expected": null,
+      "error": "TooLong"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+      "expected": null,
+      "error": "TooLong"
+    },
+    {
+      "input": "alité@example.com",
+      "expected": null,
+      "error": "NonAscii"
+    },
+    {
+      "input": "user@exämple.com",
+      "expected": null,
+      "error": "NonAscii"
+    },
+    {
+      "input": "user@example.com🔒",
+      "expected": null,
+      "error": "NonAscii"
+    },
+    {
+      "input": "user name@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "user\tname@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "user\u0000name@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "user\u0007name@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "user\u001fname@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "user\u007fname@example.com",
+      "expected": null,
+      "error": "ControlOrWhitespace"
+    },
+    {
+      "input": "userexample.com",
+      "expected": null,
+      "error": "MissingOrMultipleAt"
+    },
+    {
+      "input": "user@@example.com",
+      "expected": null,
+      "error": "MissingOrMultipleAt"
+    },
+    {
+      "input": "a@b@c.com",
+      "expected": null,
+      "error": "MissingOrMultipleAt"
+    },
+    {
+      "input": "@example.com",
+      "expected": null,
+      "error": "EmptyLocalPart"
+    },
+    {
+      "input": "   @example.com",
+      "expected": null,
+      "error": "EmptyLocalPart"
+    },
+    {
+      "input": "alice@",
+      "expected": null,
+      "error": "EmptyDomain"
+    },
+    {
+      "input": "alice@   ",
+      "expected": null,
+      "error": "EmptyDomain"
+    }
+  ]
+}

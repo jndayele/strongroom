@@ -8,15 +8,17 @@ use opaque_ke::{
     ClientRegistrationFinishParameters, CredentialResponse, Identifiers, RegistrationResponse,
 };
 use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
 use std::env;
 use std::error::Error;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use strongroom_api::auth::handlers::{
-    AppState, LoginFinishRequest, LoginStartRequest, LoginStartResponse, SignupFinishRequest,
-    SignupStartRequest, SignupStartResponse,
+    AppState, LoginFinishRequest, LoginStartRequest, LoginStartResponse, SessionResponse,
+    SignupFinishRequest, SignupStartRequest, SignupStartResponse,
 };
+use strongroom_api::auth::sessions::upgrade_session_after_mfa;
 use strongroom_api::build_router_with_state;
 use strongroom_api::config::{CredentialIdKey, EmailHashKey, OpaqueServerSetup};
 use strongroom_api::db::connect_pool;
@@ -113,24 +115,27 @@ impl Drop for TestServer {
     }
 }
 
-async fn http_post(
+async fn http_request(
     addr: SocketAddr,
+    method: &str,
     path: &str,
-    content_type: Option<&str>,
+    extra_headers: &[(&str, &str)],
     body: &[u8],
-) -> Result<(u16, Vec<u8>), Box<dyn Error>> {
+) -> Result<(u16, Vec<String>, Vec<u8>), Box<dyn Error>> {
     let mut stream = TcpStream::connect(addr).await?;
-    let ct_header = match content_type {
-        Some(ct) => format!("Content-Type: {ct}\r\n"),
-        None => String::new(),
-    };
-    let req_head = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\n{ct_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
+    let mut req_head = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n");
+    for (k, v) in extra_headers {
+        req_head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if !body.is_empty() || matches!(method, "POST" | "PUT" | "PATCH") {
+        req_head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    req_head.push_str("Connection: close\r\n\r\n");
 
     stream.write_all(req_head.as_bytes()).await?;
-    stream.write_all(body).await?;
+    if !body.is_empty() {
+        stream.write_all(body).await?;
+    }
 
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await?;
@@ -142,15 +147,46 @@ async fn http_post(
     let headers_str = std::str::from_utf8(&raw[..sep_pos])?;
     let body_bytes = raw[sep_pos + 4..].to_vec();
 
-    let status_line = headers_str
-        .lines()
-        .next()
-        .ok_or("missing HTTP status line")?;
+    let mut lines = headers_str.lines();
+    let status_line = lines.next().ok_or("missing HTTP status line")?;
     let mut parts = status_line.split_whitespace();
     let _http_ver = parts.next().ok_or("missing HTTP version")?;
     let status_code: u16 = parts.next().ok_or("missing status code")?.parse()?;
 
-    Ok((status_code, body_bytes))
+    let mut set_cookies = Vec::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("set-cookie") {
+                set_cookies.push(v.trim().to_string());
+            }
+        }
+    }
+
+    Ok((status_code, set_cookies, body_bytes))
+}
+
+fn extract_cookie_val(set_cookies: &[String], name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    for hdr in set_cookies {
+        if let Some(rest) = hdr.strip_prefix(&prefix) {
+            return Some(rest.split(';').next().unwrap_or("").to_string());
+        }
+    }
+    None
+}
+
+async fn http_post(
+    addr: SocketAddr,
+    path: &str,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Result<(u16, Vec<u8>), Box<dyn Error>> {
+    let mut headers = Vec::new();
+    if let Some(ct) = content_type {
+        headers.push(("Content-Type", ct));
+    }
+    let (status, _, resp_body) = http_request(addr, "POST", path, &headers, body).await?;
+    Ok((status, resp_body))
 }
 
 async fn http_post_json<T: serde::Serialize>(
@@ -182,6 +218,7 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
     }
 
     let pool = connect_pool(&app_database_url()).await?;
+    let migrator_pool = connect_pool(&migrator_database_url()).await?;
     let setup = OpaqueServerSetup::generate();
     let cred_key = CredentialIdKey::from_bytes([0x3A; 32]);
     let email_key = EmailHashKey::from_bytes([0x7C; 32]);
@@ -190,7 +227,14 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
     let cred_key_b64 = URL_SAFE_NO_PAD.encode(cred_key.as_bytes());
     let email_key_b64 = URL_SAFE_NO_PAD.encode(email_key.as_bytes());
 
-    let state = Arc::new(AppState::new(pool, setup, cred_key, email_key));
+    let state = Arc::new(AppState::new(
+        pool.clone(),
+        setup,
+        cred_key,
+        email_key,
+        String::from("https://app.strongroom.example"),
+        false,
+    ));
     tracing::debug!(state = ?state, "initialized app state for log leak test");
 
     let app = build_router_with_state(state);
@@ -323,8 +367,104 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
     let finish_req = LoginFinishRequest {
         login_id: login_start_resp.login_id,
         credential_finalization: finalization_b64.clone(),
+        device_id: None,
     };
-    let (st, _) = http_post_json(server.addr, "/auth/login/finish", &finish_req).await?;
+    let finish_body = serde_json::to_vec(&finish_req)?;
+    let (st, finish_cookies, _) = http_request(
+        server.addr,
+        "POST",
+        "/auth/login/finish",
+        &[("Content-Type", "application/json")],
+        &finish_body,
+    )
+    .await?;
+    assert_eq!(st, 200);
+
+    let stage1_at =
+        extract_cookie_val(&finish_cookies, "__Host-at").ok_or("missing stage-1 __Host-at")?;
+    let stage1_at_raw = b64_decode(&stage1_at)?;
+    let stage1_at_hash: [u8; 32] = Sha256::digest(&stage1_at_raw).into();
+    forbidden.push(("stage1_access_token", stage1_at.clone()));
+    forbidden.push(("stage1_cookie_hdr", format!("__Host-at={stage1_at}")));
+    forbidden.push((
+        "stage1_access_hash_b64",
+        URL_SAFE_NO_PAD.encode(stage1_at_hash),
+    ));
+
+    // 2b. Exercise session, upgrade_session_after_mfa, devices, refresh, and logout
+    let (st, _, sess_bytes) = http_request(
+        server.addr,
+        "GET",
+        "/auth/session",
+        &[("Cookie", &format!("__Host-at={stage1_at}"))],
+        b"",
+    )
+    .await?;
+    assert_eq!(st, 200);
+    let sess_resp: SessionResponse = serde_json::from_slice(&sess_bytes)?;
+    let session_id: String =
+        sqlx::query_scalar("SELECT id::text FROM sessions WHERE access_hash = $1")
+            .bind(&stage1_at_hash[..])
+            .fetch_one(&migrator_pool)
+            .await?;
+
+    let pair = upgrade_session_after_mfa(&pool, &sess_resp.user_id, &session_id)
+        .await
+        .map_err(|_| "upgrade_session_after_mfa failed")?;
+    let stage2_at = pair.access_token.to_base64url();
+    let stage2_rt = pair.refresh_token.to_base64url();
+    forbidden.push(("stage2_access_token", stage2_at.clone()));
+    forbidden.push(("stage2_refresh_token", stage2_rt.clone()));
+    forbidden.push((
+        "stage2_access_hash_b64",
+        URL_SAFE_NO_PAD.encode(pair.access_token.sha256()),
+    ));
+    forbidden.push((
+        "stage2_refresh_hash_b64",
+        URL_SAFE_NO_PAD.encode(pair.refresh_token.sha256()),
+    ));
+
+    let (st, _, _) = http_request(
+        server.addr,
+        "GET",
+        "/auth/devices",
+        &[("Cookie", &format!("__Host-at={stage2_at}"))],
+        b"",
+    )
+    .await?;
+    assert_eq!(st, 200);
+
+    let (st, refresh_cookies, _) = http_request(
+        server.addr,
+        "POST",
+        "/auth/refresh",
+        &[
+            ("Cookie", &format!("__Host-rt={stage2_rt}")),
+            ("X-Vault-CSRF", "1"),
+        ],
+        b"",
+    )
+    .await?;
+    assert_eq!(st, 200);
+    let refreshed_at =
+        extract_cookie_val(&refresh_cookies, "__Host-at").ok_or("missing refreshed at")?;
+    let refreshed_rt =
+        extract_cookie_val(&refresh_cookies, "__Host-rt").ok_or("missing refreshed rt")?;
+    forbidden.push(("refreshed_access_token", refreshed_at.clone()));
+    forbidden.push(("refreshed_refresh_token", refreshed_rt.clone()));
+    forbidden.push(("refreshed_cookie_hdr", format!("__Host-at={refreshed_at}")));
+
+    let (st, _, _) = http_request(
+        server.addr,
+        "POST",
+        "/auth/logout",
+        &[
+            ("Cookie", &format!("__Host-at={refreshed_at}")),
+            ("X-Vault-CSRF", "1"),
+        ],
+        b"",
+    )
+    .await?;
     assert_eq!(st, 200);
 
     // 3. Failure cases:
@@ -361,6 +501,7 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
         &LoginFinishRequest {
             login_id: wrong_start_resp.login_id,
             credential_finalization: finalization_b64.clone(),
+            device_id: None,
         },
     )
     .await?;
@@ -395,6 +536,7 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
         &LoginFinishRequest {
             login_id: unknown_start_resp.login_id,
             credential_finalization: finalization_b64,
+            device_id: None,
         },
     )
     .await?;
@@ -469,6 +611,10 @@ async fn tracing_output_never_leaks_emails_base64_login_id_or_secrets() -> Resul
     assert!(captured_logs.contains("auth.signup.finish"));
     assert!(captured_logs.contains("auth.login.start"));
     assert!(captured_logs.contains("auth.login.finish"));
+    assert!(captured_logs.contains("auth.session"));
+    assert!(captured_logs.contains("auth.devices.list"));
+    assert!(captured_logs.contains("auth.refresh"));
+    assert!(captured_logs.contains("auth.logout"));
     assert!(captured_logs.contains("status=200"));
     assert!(captured_logs.contains("status=400"));
     assert!(captured_logs.contains("status=401"));

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET revoked_at = COALESCE(revoked_at, now())\n        WHERE device_id = $1::text::uuid\n          AND user_id = $2::text::uuid\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e88aecdbbc285dcd0f828c0c1008b48085da75c70d533ab2fe245032f5d3c265"
+}

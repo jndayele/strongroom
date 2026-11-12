@@ -115,6 +115,34 @@ fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct EmailVectorFile {
+        cases: Vec<EmailVectorCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct EmailVectorCase {
+        input: String,
+        expected: Option<String>,
+        error: Option<String>,
+    }
+
+    fn parse_expected_error(name: &str) -> Result<EmailError, String> {
+        match name {
+            "Empty" => Ok(EmailError::Empty),
+            "TooLong" => Ok(EmailError::TooLong),
+            "NonAscii" => Ok(EmailError::NonAscii),
+            "ControlOrWhitespace" => Ok(EmailError::ControlOrWhitespace),
+            "MissingOrMultipleAt" => Ok(EmailError::MissingOrMultipleAt),
+            "EmptyLocalPart" => Ok(EmailError::EmptyLocalPart),
+            "EmptyDomain" => Ok(EmailError::EmptyDomain),
+            other => Err(format!(
+                "unknown EmailError variant in test vectors: {other}"
+            )),
+        }
+    }
 
     #[test]
     fn canonicalize_and_hmac_consistency_and_domain_separation() {
@@ -143,36 +171,41 @@ mod tests {
     }
 
     #[test]
-    fn table_driven_invalid_emails_are_rejected() {
-        let long_local = "a".repeat(245);
-        let too_long_email = format!("{long_local}@example.com"); // 245 + 12 = 257 > 254
+    fn shared_email_test_vectors_match_specification() -> Result<(), Box<dyn Error>> {
+        let raw_json = include_str!("../../../../docs/test-vectors/email.json");
+        let vectors: EmailVectorFile = serde_json::from_str(raw_json)?;
+        assert!(!vectors.cases.is_empty());
 
-        let cases: &[(&str, EmailError)] = &[
-            ("", EmailError::Empty),
-            ("   \t\r\n  ", EmailError::Empty),
-            (&too_long_email, EmailError::TooLong),
-            ("alité@example.com", EmailError::NonAscii),
-            ("user@exämple.com", EmailError::NonAscii),
-            ("user name@example.com", EmailError::ControlOrWhitespace),
-            ("user\tname@example.com", EmailError::ControlOrWhitespace),
-            ("user\0name@example.com", EmailError::ControlOrWhitespace),
-            ("user\x07name@example.com", EmailError::ControlOrWhitespace),
-            ("userexample.com", EmailError::MissingOrMultipleAt),
-            ("user@@example.com", EmailError::MissingOrMultipleAt),
-            ("a@b@c.com", EmailError::MissingOrMultipleAt),
-            ("@example.com", EmailError::EmptyLocalPart),
-            ("   @example.com", EmailError::EmptyLocalPart),
-            ("alice@", EmailError::EmptyDomain),
-            ("alice@   ", EmailError::EmptyDomain),
-        ];
-
-        for (input, expected_err) in cases {
-            let actual = canonicalize_email(input);
-            assert_eq!(
-                actual,
-                Err(*expected_err),
-                "expected input {input:?} to fail with {expected_err:?}, got {actual:?}"
-            );
+        for case in vectors.cases {
+            let actual = canonicalize_email(&case.input);
+            match (case.expected, case.error) {
+                (Some(expected), None) => {
+                    assert_eq!(
+                        actual,
+                        Ok(expected),
+                        "expected input {:?} to canonicalize cleanly",
+                        case.input
+                    );
+                }
+                (None, Some(err_name)) => {
+                    let expected_err = parse_expected_error(&err_name)?;
+                    assert_eq!(
+                        actual,
+                        Err(expected_err),
+                        "expected input {:?} to fail with {expected_err:?}, got {actual:?}",
+                        case.input
+                    );
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid test vector entry for input {:?}: must set exactly one of expected or error",
+                        case.input
+                    )
+                    .into());
+                }
+            }
         }
+
+        Ok(())
     }
 }

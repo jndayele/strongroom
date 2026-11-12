@@ -1,4 +1,8 @@
-export { buildAad } from "./aad.ts";
+export {
+  buildAad,
+  buildKeyWrapAad,
+  type KeyWrapPurpose,
+} from "./aad.ts";
 export {
   AeadDecryptionError,
   aeadDecrypt,

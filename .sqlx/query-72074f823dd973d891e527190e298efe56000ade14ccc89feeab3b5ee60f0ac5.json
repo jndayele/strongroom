@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE devices\n            SET last_seen_at = now()\n            WHERE id = $1::text::uuid\n              AND user_id = $2::text::uuid\n              AND revoked_at IS NULL\n            RETURNING id::text AS \"id!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "72074f823dd973d891e527190e298efe56000ade14ccc89feeab3b5ee60f0ac5"
+}

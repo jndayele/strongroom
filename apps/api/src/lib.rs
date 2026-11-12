@@ -10,14 +10,15 @@ use axum::http::header::{CACHE_CONTROL, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS}
 use axum::http::HeaderValue;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::auth::handlers::{
-    auth_logging_middleware, login_finish_handler, login_start_handler, signup_finish_handler,
-    signup_start_handler, AppState,
+    auth_logging_middleware, cors_middleware, csrf_middleware, delete_device_handler,
+    list_devices_handler, login_finish_handler, login_start_handler, logout_handler,
+    refresh_handler, session_handler, signup_finish_handler, signup_start_handler, AppState,
 };
 
 /// Maximum allowed HTTP request body size (16 KiB).
@@ -58,12 +59,19 @@ pub fn build_router_with_state(state: Arc<AppState>) -> Router {
         .route("/signup/finish", post(signup_finish_handler))
         .route("/login/start", post(login_start_handler))
         .route("/login/finish", post(login_finish_handler))
+        .route("/refresh", post(refresh_handler))
+        .route("/logout", post(logout_handler))
+        .route("/session", get(session_handler))
+        .route("/devices", get(list_devices_handler))
+        .route("/devices/{id}", delete(delete_device_handler))
         .layer(middleware::from_fn(auth_logging_middleware))
-        .with_state(state);
+        .with_state(Arc::clone(&state));
 
     Router::new()
         .route("/healthz", get(healthz))
         .nest("/auth", auth_router)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn(csrf_middleware))
+        .layer(middleware::from_fn_with_state(state, cors_middleware))
         .layer(middleware::from_fn(security_headers_middleware))
 }

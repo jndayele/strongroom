@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            s.device_id::text AS \"device_id!\",\n            s.family_id::text AS \"family_id!\"\n        FROM sessions s\n        INNER JOIN devices d\n            ON d.id = s.device_id\n           AND d.user_id = s.user_id\n        WHERE s.id = $1::text::uuid\n          AND s.user_id = $2::text::uuid\n          AND s.stage = 1\n          AND s.revoked_at IS NULL\n          AND s.used_at IS NULL\n          AND s.access_expires_at > now()\n          AND d.revoked_at IS NULL\n        FOR UPDATE OF s\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "device_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "family_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "a04ee5b334711eb028169558177b4c61f46d029a0d2bfbb55a320b3ffb630930"
+}

@@ -38,4 +38,32 @@ All three secrets are base64url-encoded environment variables validated at start
 ### 5. Logging Privacy & SQLx Statement Logging
 - The API defaults to log level `INFO` unless `LOG_LEVEL` is explicitly set (`apps/api/src/main.rs`).
 - `connect_pool()` (`apps/api/src/db/mod.rs`) calls `ConnectOptions::disable_statement_logging()` (setting both `log_statements` and `log_slow_statements` to `LevelFilter::Off`). Even if `LOG_LEVEL=debug` or `trace` is enabled, SQLx will never emit per-query `rows_returned` / `rows_affected` records that would reveal to log readers whether an `email_hash` lookup matched an existing account.
-- `/auth/*` request logs emit only `(event, status, request_id)` and never log emails, email hashes, request bodies, `login_id`s, or base64 fields.
+- `/auth/*` request logs emit only `(event, status, request_id)` and never log emails, email hashes, request bodies, `login_id`s, tokens, cookies, token hashes, or base64 fields.
+
+---
+
+## Opaque Session & Refresh Token Design
+
+### 1. Token Format and Server-Side Hashing (No JWTs)
+- Every access token and refresh token is **32 random bytes** generated from `OsRng` (256 bits of entropy), encoded on the wire as a 43-character unpadded `base64url` string.
+- The server **never** signs or issues JWTs and **never** stores raw tokens in PostgreSQL. Instead, `sessions.access_hash` and `sessions.refresh_hash` store only the 32-byte `SHA-256` digest of the decoded token bytes.
+- Because tokens carry no embedded claims and are resolved solely by hash lookup in `sessions` joined with `devices`, logout, refresh-token reuse detection, and remote device revocation take effect immediately on the next request.
+
+### 2. Two-Stage Session Lifecycle
+1. **Stage 1 (Password verified, MFA pending):**
+   - Created by `POST /auth/login/finish` upon OPAQUE verification.
+   - Issues only an access token (`__Host-at`) valid for **5 minutes**, with **no** refresh token (`refresh_hash = NULL`).
+   - Permitted only on `/auth/session`, `/auth/logout`, and future 2FA verification endpoints.
+2. **Stage 2 (Fully authenticated):**
+   - Created by `upgrade_session_after_mfa(...)` after second-factor verification succeeds.
+   - Rotates `access_hash` immediately (invalidating the Stage 1 token), sets `access_expires_at = now() + 10 minutes`, and issues a rotating refresh token (`__Host-rt`) with a **7-day absolute ceiling** (`refresh_expires_at = now() + 7 days`) and a **24-hour sliding idle window** (`idle_expires_at = now() + 24 hours`).
+
+### 3. Refresh Token Rotation & Reuse Detection
+- `POST /auth/refresh` locks the matching `sessions` row (`FOR UPDATE`), verifies it is an active Stage 2 session within both the 7-day absolute limit and 24-hour idle limit on a non-revoked device, marks the old row `used_at = now()`, and inserts a fresh row in the same `family_id` (preserving `mfa_verified_at` and the original 7-day `refresh_expires_at` ceiling while resetting `idle_expires_at` to 24 hours).
+- **Reuse detection:** If `POST /auth/refresh` receives a refresh token whose row already has `used_at IS NOT NULL`, the server immediately revokes the **entire** `family_id` (`UPDATE sessions SET revoked_at = COALESCE(revoked_at, now()) WHERE user_id = $1 AND family_id = $2`) and returns the uniform `401` error.
+
+### 4. Cookie Hardening, CSRF, and CORS
+- **Cookies:** Default production cookies use `__Host-at` and `__Host-rt` with `HttpOnly; Secure; SameSite=Strict; Path=/` and no `Domain` attribute.
+- **Local HTTP dev switch (`DEV_INSECURE_COOKIES`):** Off (`false`) by default. When explicitly set to `true` (permitted only when `APP_ORIGIN` is `http://localhost` or `http://127.0.0.1`), `Secure` is omitted and the `__Host-` prefix is dropped (`at`, `rt`) because browsers discard `__Host-` cookies that lack `Secure`.
+- **CSRF:** Every authenticated mutating request (`POST`/`PUT`/`PATCH`/`DELETE`, excluding the unauthenticated OPAQUE `/auth/signup/*` and `/auth/login/*` endpoints) must include `X-Vault-CSRF: 1`, otherwise `403`.
+- **CORS:** Strict allowlist of the single `APP_ORIGIN` configured at startup (`Access-Control-Allow-Credentials: true`, `Vary: Origin`, only `GET, POST, DELETE, OPTIONS` and `Content-Type, X-Vault-CSRF`). No wildcard or arbitrary origin reflection.

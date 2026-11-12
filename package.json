@@ -4,13 +4,15 @@
   "private": true,
   "workspaces": [
     "apps/web",
+    "packages/auth-client",
     "packages/crypto"
   ],
   "scripts": {
     "build": "npm run build --workspace=apps/web",
     "typecheck": "npm run typecheck --workspaces",
     "lint": "npm run lint --workspaces",
-    "test": "npm test --workspaces"
+    "test": "npm test --workspaces",
+    "test:integration": "node scripts/run-integration.mjs"
   },
   "overrides": {
     "minimatch": "11.0.5"

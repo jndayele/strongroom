@@ -5,6 +5,7 @@ import {
   aeadEncrypt,
   ALGORITHM_ID_AES_256_GCM,
   buildAad,
+  buildKeyWrapAad,
   decodeEnvelope,
   encodeEnvelope,
   ENVELOPE_HEADER_BYTE_LENGTH,
@@ -447,6 +448,56 @@ describe("4. Tamper tests (must FAIL to decrypt)", () => {
     await expect(unwrapKey(kek, wrappedKeyA, aadItemB)).rejects.toThrow(
       AeadDecryptionError
     );
+  });
+
+  it("builds distinct domain-separated key-wrap AADs and rejects unwrap when purpose, keyVersion, or schemaVersion differs", async () => {
+    const aadKm = buildKeyWrapAad("K_m", 1, 1);
+    const aadKs = buildKeyWrapAad("K_s", 1, 1);
+    const aadKsPrf = buildKeyWrapAad("K_s_prf", 1, 1);
+    const aadKmV2 = buildKeyWrapAad("K_m", 2, 1);
+    const aadKmS2 = buildKeyWrapAad("K_m", 1, 2);
+
+    const uniqueHexes = new Set([
+      bytesToHex(aadKm),
+      bytesToHex(aadKs),
+      bytesToHex(aadKsPrf),
+      bytesToHex(aadKmV2),
+      bytesToHex(aadKmS2),
+      bytesToHex(buildAad("strongroom-key-wrap-v1", "K_m", 1, 1)),
+      bytesToHex(buildAad("K_m", "K_s", 1, 1)),
+    ]);
+    expect(uniqueHexes.size).toBe(7);
+
+    expect(() => buildKeyWrapAad("K_m", 0, 1)).toThrow(RangeError);
+    expect(() => buildKeyWrapAad("K_m", 1, 0)).toThrow(RangeError);
+
+    const kek = await generateVaultKey();
+    const { wrappedKey } = await generateAndWrapKey(kek, aadKm);
+
+    // Matching AAD succeeds
+    const unwrapped = await unwrapKey(kek, wrappedKey, buildKeyWrapAad("K_m", 1, 1));
+    expect(unwrapped.extractable).toBe(false);
+
+    // Different purpose, keyVersion, schemaVersion, or item AAD must all fail
+    await expect(unwrapKey(kek, wrappedKey, aadKs)).rejects.toThrow(
+      AeadDecryptionError
+    );
+    await expect(unwrapKey(kek, wrappedKey, aadKsPrf)).rejects.toThrow(
+      AeadDecryptionError
+    );
+    await expect(unwrapKey(kek, wrappedKey, aadKmV2)).rejects.toThrow(
+      AeadDecryptionError
+    );
+    await expect(unwrapKey(kek, wrappedKey, aadKmS2)).rejects.toThrow(
+      AeadDecryptionError
+    );
+    await expect(
+      unwrapKey(
+        kek,
+        wrappedKey,
+        buildAad("strongroom-key-wrap-v1", "K_m", 1, 1)
+      )
+    ).rejects.toThrow(AeadDecryptionError);
   });
 
   it("fails to decrypt a truncated envelope", async () => {

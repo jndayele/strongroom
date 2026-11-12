@@ -40,6 +40,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         config.opaque_server_setup,
         config.credential_id_key,
         config.email_hash_key,
+        config.app_origin,
+        config.dev_insecure_cookies,
     ));
 
     let listener = TcpListener::bind(addr).await?;

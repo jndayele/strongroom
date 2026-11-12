@@ -35,23 +35,31 @@ Tracks registered client devices for session binding and remote revocation.
 | --- | --- | --- | --- |
 | `id` | `UUID` (PK) | Identifier | Generated via `gen_random_uuid()` |
 | `user_id` | `UUID` (FK -> `users.id`) | Identifier | `ON DELETE CASCADE`; indexed (`idx_devices_user_id`) |
-| `name_enc` | `BYTEA` (`<= 1024 B`) | **Ciphertext** | Client-encrypted human-readable device label |
+| `name_enc` | `BYTEA` (nullable, `<= 1024 B`) | **Ciphertext** | Optional client-encrypted human-readable device label (`NULL` until client uploads encrypted label) |
 | `created_at` | `TIMESTAMPTZ` | Timestamp | Device registration time |
 | `last_seen_at` | `TIMESTAMPTZ` | Timestamp | Last authenticated activity from this device |
 | `revoked_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Non-null once the device is revoked |
 
 ### 3. `sessions`
 
-Tracks rotating refresh tokens and rotation families per device.
+Tracks two-stage opaque sessions (Stage 1: password verified / MFA pending; Stage 2: fully authenticated) and rotating refresh-token families per device.
 
 | Column | Type | Classification | Notes |
 | --- | --- | --- | --- |
 | `id` | `UUID` (PK) | Identifier | Generated via `gen_random_uuid()` |
+| `user_id` | `UUID` (FK -> `users.id`) | Identifier | `ON DELETE CASCADE`; indexed (`idx_sessions_user_id`); enforced in every session query |
 | `device_id` | `UUID` (FK -> `devices.id`) | Identifier | `ON DELETE CASCADE`; indexed (`idx_sessions_device_id`) |
-| `refresh_hash` | `BYTEA` (`UNIQUE`, `<= 64 B`) | **Cryptographic hash** | One-way hash of the refresh token (raw token is never stored) |
 | `family_id` | `UUID` | Identifier | Token rotation family for reuse detection; indexed (`idx_sessions_family_id`) |
-| `expires_at` | `TIMESTAMPTZ` | Timestamp | Hard expiration timestamp |
-| `revoked_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Non-null once rotated or revoked |
+| `stage` | `SMALLINT` (`1 \| 2`) | Metadata | `1` = OPAQUE password verified (MFA pending); `2` = fully authenticated after MFA |
+| `mfa_verified_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Set when upgraded to Stage 2; `NULL` in Stage 1 |
+| `access_hash` | `BYTEA` (`UNIQUE`, `32 B`) | **Cryptographic hash** | SHA-256 of the opaque access token (raw token is never stored) |
+| `access_expires_at` | `TIMESTAMPTZ` | Timestamp | Access token expiry (`5 minutes` in Stage 1, `10 minutes` in Stage 2) |
+| `refresh_hash` | `BYTEA` (nullable, `UNIQUE`, `32 B`) | **Cryptographic hash** | SHA-256 of the opaque refresh token (`NULL` in Stage 1) |
+| `refresh_expires_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Absolute 7-day ceiling for the session family (`NULL` in Stage 1) |
+| `idle_expires_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Sliding 24-hour idle expiration timestamp (`NULL` in Stage 1) |
+| `used_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Non-null once rotated by `/auth/refresh`; replaying a used token revokes the entire `family_id` |
+| `created_at` | `TIMESTAMPTZ` | Timestamp | Session row creation timestamp |
+| `revoked_at` | `TIMESTAMPTZ` (nullable) | Timestamp | Non-null once the session, family, or parent device is revoked |
 
 ### 4. `passkeys`
 

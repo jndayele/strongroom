@@ -22,6 +22,18 @@ const MAX_IDENTIFIER_BYTES = 1024;
 const MAX_UINT32 = 0xffff_ffff;
 const textEncoder = new TextEncoder();
 
+const KEY_WRAP_AAD_DOMAIN_PREFIX = textEncoder.encode(
+  "strongroom-key-wrap-v1"
+);
+
+export type KeyWrapPurpose = "K_m" | "K_s" | "K_s_prf";
+
+const VALID_KEY_WRAP_PURPOSES: ReadonlySet<string> = new Set<string>([
+  "K_m",
+  "K_s",
+  "K_s_prf",
+]);
+
 function toIdentifierBytes(
   name: string,
   value: string | Uint8Array
@@ -39,12 +51,51 @@ function toIdentifierBytes(
   return bytes;
 }
 
-function validateVersionUint32(name: string, value: number): void {
+function validateVersionUint32(fnName: string, name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_UINT32) {
     throw new RangeError(
-      `buildAad: ${name} must be an integer in [1, 2^32 - 1], got ${String(value)}`
+      `${fnName}: ${name} must be an integer in [1, 2^32 - 1], got ${String(value)}`
     );
   }
+}
+
+function uint32BigEndianBytes(value: number): Uint8Array {
+  const buf = new Uint8Array(4);
+  new DataView(buf.buffer).setUint32(0, value, false);
+  return buf;
+}
+
+/**
+ * Shared length-prefixed encoder: prepends an optional domain-separation prefix
+ * and encodes each field as `[4-byte big-endian length][raw bytes]`.
+ */
+function encodeLengthPrefixedFields(
+  fields: readonly Uint8Array[],
+  domainPrefix?: Uint8Array
+): Uint8Array<ArrayBuffer> {
+  const prefixLength = domainPrefix ? domainPrefix.byteLength : 0;
+  let totalLength = prefixLength;
+  for (const field of fields) {
+    totalLength += 4 + field.byteLength;
+  }
+
+  const out = new Uint8Array(totalLength);
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  let offset = 0;
+
+  if (domainPrefix) {
+    out.set(domainPrefix, offset);
+    offset += domainPrefix.byteLength;
+  }
+
+  for (const field of fields) {
+    view.setUint32(offset, field.byteLength, false);
+    offset += 4;
+    out.set(field, offset);
+    offset += field.byteLength;
+  }
+
+  return out;
 }
 
 /**
@@ -66,39 +117,46 @@ export function buildAad(
 ): Uint8Array<ArrayBuffer> {
   const userBytes = toIdentifierBytes("userId", userId);
   const itemBytes = toIdentifierBytes("itemId", itemId);
-  validateVersionUint32("keyVersion", keyVersion);
-  validateVersionUint32("schemaVersion", schemaVersion);
+  validateVersionUint32("buildAad", "keyVersion", keyVersion);
+  validateVersionUint32("buildAad", "schemaVersion", schemaVersion);
 
-  // Total length:
-  // 4 + userBytes.length + 4 + itemBytes.length + (4 + 4) + (4 + 4)
-  const totalLength = 4 + userBytes.byteLength + 4 + itemBytes.byteLength + 16;
-  const out = new Uint8Array(totalLength);
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  return encodeLengthPrefixedFields([
+    userBytes,
+    itemBytes,
+    uint32BigEndianBytes(keyVersion),
+    uint32BigEndianBytes(schemaVersion),
+  ]);
+}
 
-  let offset = 0;
+/**
+ * Builds canonical, domain-separated length-prefixed AAD bytes for vault key wrapping
+ * (`K_m`, `K_s`, or `K_s_prf`), bound to `keyVersion` and `schemaVersion`.
+ *
+ * Uses a fixed domain-separation prefix (`"strongroom-key-wrap-v1"`, starting with ASCII
+ * bytes `0x73 0x74`, whereas item AAD always starts with `0x00 0x00` from `len <= 1024`)
+ * followed by length-prefixed `(purpose, keyVersion, schemaVersion)` so it can never
+ * collide with `buildAad`.
+ */
+export function buildKeyWrapAad(
+  purpose: KeyWrapPurpose,
+  keyVersion: number,
+  schemaVersion: number
+): Uint8Array<ArrayBuffer> {
+  if (!VALID_KEY_WRAP_PURPOSES.has(purpose)) {
+    throw new RangeError(
+      `buildKeyWrapAad: invalid purpose '${String(purpose)}'`
+    );
+  }
+  validateVersionUint32("buildKeyWrapAad", "keyVersion", keyVersion);
+  validateVersionUint32("buildKeyWrapAad", "schemaVersion", schemaVersion);
 
-  // Field 1: userId (4-byte big-endian length + raw bytes)
-  view.setUint32(offset, userBytes.byteLength, false);
-  offset += 4;
-  out.set(userBytes, offset);
-  offset += userBytes.byteLength;
-
-  // Field 2: itemId (4-byte big-endian length + raw bytes)
-  view.setUint32(offset, itemBytes.byteLength, false);
-  offset += 4;
-  out.set(itemBytes, offset);
-  offset += itemBytes.byteLength;
-
-  // Field 3: keyVersion (4-byte big-endian length = 4, followed by 4-byte big-endian uint32)
-  view.setUint32(offset, 4, false);
-  offset += 4;
-  view.setUint32(offset, keyVersion, false);
-  offset += 4;
-
-  // Field 4: schemaVersion (4-byte big-endian length = 4, followed by 4-byte big-endian uint32)
-  view.setUint32(offset, 4, false);
-  offset += 4;
-  view.setUint32(offset, schemaVersion, false);
-
-  return out;
+  const purposeBytes = textEncoder.encode(purpose);
+  return encodeLengthPrefixedFields(
+    [
+      purposeBytes,
+      uint32BigEndianBytes(keyVersion),
+      uint32BigEndianBytes(schemaVersion),
+    ],
+    KEY_WRAP_AAD_DOMAIN_PREFIX
+  );
 }

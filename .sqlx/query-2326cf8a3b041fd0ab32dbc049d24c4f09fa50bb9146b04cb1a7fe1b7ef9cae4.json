@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO devices (user_id, name_enc)\n                VALUES ($1::text::uuid, NULL)\n                RETURNING id::text AS \"id!\"\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "2326cf8a3b041fd0ab32dbc049d24c4f09fa50bb9146b04cb1a7fe1b7ef9cae4"
+}

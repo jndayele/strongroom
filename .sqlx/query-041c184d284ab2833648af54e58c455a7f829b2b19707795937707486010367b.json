@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET used_at = now()\n        WHERE id = $1::text::uuid\n          AND user_id = $2::text::uuid\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "041c184d284ab2833648af54e58c455a7f829b2b19707795937707486010367b"
+}

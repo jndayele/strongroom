@@ -88,7 +88,14 @@ async fn spawn_test_server() -> Result<TestServer, Box<dyn Error>> {
     let cred_key = CredentialIdKey::from_bytes([0x41; 32]);
     let email_key = EmailHashKey::from_bytes([0x82; 32]);
 
-    let state = Arc::new(AppState::new(pool, setup, cred_key, email_key));
+    let state = Arc::new(AppState::new(
+        pool,
+        setup,
+        cred_key,
+        email_key,
+        String::from("https://app.strongroom.example"),
+        false,
+    ));
     let app = build_router_with_state(Arc::clone(&state));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -251,7 +258,7 @@ async fn full_signup_and_login_flow_and_db_row_inspection() -> Result<(), Box<dy
     let signup_resp: SignupFinishResponse = serde_json::from_slice(&finish_http.body)?;
     assert_eq!(signup_resp.status, "ok");
 
-    // 2. Login start + finish -> 200 {"status":"password_verified"}
+    // 2. Login start + finish -> 200 {"status":"mfa_required"}
     let mut rng = OsRng;
     let ksf = test_ksf()?;
     let client_login_start = ClientLogin::<TestClientSuite>::start(&mut rng, password)
@@ -296,16 +303,14 @@ async fn full_signup_and_login_flow_and_db_row_inspection() -> Result<(), Box<dy
             login_id: login_start_resp.login_id,
             credential_finalization: URL_SAFE_NO_PAD
                 .encode(client_login_finish.message.serialize()),
+            device_id: None,
         },
     )
     .await?;
     assert_eq!(login_finish_http.status, 200);
     let login_finish_resp: LoginFinishResponse = serde_json::from_slice(&login_finish_http.body)?;
-    assert_eq!(login_finish_resp.status, "password_verified");
-    assert_eq!(
-        login_finish_http.body,
-        b"{\"status\":\"password_verified\"}"
-    );
+    assert_eq!(login_finish_resp.status, "mfa_required");
+    assert_eq!(login_finish_http.body, b"{\"status\":\"mfa_required\"}");
 
     // 3. Inspect the users row in Postgres: no plaintext email, no password, and no export_key.
     let canon = canonicalize_email(&email)?;
@@ -492,6 +497,7 @@ async fn wrong_password_and_unknown_email_return_byte_identical_401_and_same_log
         &LoginFinishRequest {
             login_id: known_start_resp.login_id,
             credential_finalization: forged_finalization_b64.clone(),
+            device_id: None,
         },
     )
     .await?;
@@ -502,6 +508,7 @@ async fn wrong_password_and_unknown_email_return_byte_identical_401_and_same_log
         &LoginFinishRequest {
             login_id: unknown_start_resp.login_id,
             credential_finalization: forged_finalization_b64,
+            device_id: None,
         },
     )
     .await?;
@@ -582,6 +589,7 @@ async fn second_signup_finish_for_same_email_does_not_overwrite() -> Result<(), 
         &LoginFinishRequest {
             login_id: login1_start_resp.login_id,
             credential_finalization: URL_SAFE_NO_PAD.encode(login1_finish.message.serialize()),
+            device_id: None,
         },
     )
     .await?;
@@ -670,6 +678,7 @@ async fn replay_unknown_field_oversized_body_and_non_ascii_email_are_rejected(
     let finish_req = LoginFinishRequest {
         login_id: start_resp.login_id,
         credential_finalization: URL_SAFE_NO_PAD.encode(client_finish.message.serialize()),
+        device_id: None,
     };
 
     let first_attempt = http_post_json(server.addr, "/auth/login/finish", &finish_req).await?;

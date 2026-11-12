@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET stage = 2,\n            mfa_verified_at = now(),\n            access_hash = $3,\n            access_expires_at = now() + interval '10 minutes',\n            refresh_hash = $4,\n            refresh_expires_at = now() + interval '7 days',\n            idle_expires_at = now() + interval '24 hours'\n        WHERE id = $1::text::uuid\n          AND user_id = $2::text::uuid\n          AND stage = 1\n          AND revoked_at IS NULL\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c50384b4e106530f00c6f8b1e06c77ebd58466d425ea8dd158b46cb72611a85"
+}

@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            s.id::text AS \"id!\",\n            s.user_id::text AS \"user_id!\",\n            s.device_id::text AS \"device_id!\",\n            s.family_id::text AS \"family_id!\",\n            s.stage,\n            (s.mfa_verified_at IS NOT NULL) AS \"has_mfa!\",\n            (s.used_at IS NOT NULL) AS \"is_used!\",\n            (s.revoked_at IS NOT NULL) AS \"is_revoked!\",\n            (d.revoked_at IS NOT NULL) AS \"device_is_revoked!\",\n            (s.refresh_expires_at IS NULL OR now() >= s.refresh_expires_at) AS \"is_refresh_expired!\",\n            (s.idle_expires_at IS NULL OR now() >= s.idle_expires_at) AS \"is_idle_expired!\"\n        FROM sessions s\n        INNER JOIN devices d\n            ON d.id = s.device_id\n           AND d.user_id = s.user_id\n        WHERE s.refresh_hash = $1\n        FOR UPDATE OF s\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "device_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "family_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "stage",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "stage"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "has_mfa!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_used!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_revoked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "device_is_revoked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "is_refresh_expired!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "is_idle_expired!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e2257b3c2972a0e2d2b32d22007d66c7af3ea5f9717699bb713ade5dcbe5268b"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE sessions\n        SET revoked_at = COALESCE(revoked_at, now())\n        WHERE user_id = $1::text::uuid\n          AND family_id = $2::text::uuid\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "25af069115552b40deeee20d6e4ccaa208951d534dfbd3f88eb949f9bf20f03c"
+}
